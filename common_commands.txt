@@ -1,0 +1,11 @@
+Для mat_eval_mrccm.py:
+python mat_eval_mrccm.py --hr_mat "C:\MEC_ILS\mat_volumes_ILS\ILS1.mat" --lr_mat "C:\MEC_ILS\mat_volumes_ILS\ILS_LR.mat" --ckpt "C:\Users\Вячеслав\Documents\superresolution\models\test_6_unet.pt" --batch_size 4 --workers 8 --limit_pairs 5
+
+Для train.py:
+python train.py --data_root DeepRockSR-2D --epochs_x2 5 --batch_size 8 --workers 8
+
+Для evaluate.py:
+python evaluate.py --data_root DeepRockSR-2D --scale X2 --batch_size 4 --workers 0 --ckpt best_x2.pt --save_dir preds_x2
+
+Для prepare_mrccm.py:
+python prepare_mrccm.py --lr_mat "C:\MEC_ILS\mat_volumes_ILS\ILS_LR.mat" --hr ILS1="C:\MEC_ILS\mat_volumes_ILS\ILS1.mat" --hr ILS2="C:\MEC_ILS\mat_volumes_ILS\ILS2.mat" --hr ILS3="C:\MEC_ILS\mat_volumes_ILS\ILS3.mat" --out_root MRCCM2D --force_4x --workers 8 --chunk 16
