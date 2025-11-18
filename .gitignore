@@ -1,0 +1,51 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.so
+
+# === Virtual environments ===
+.venv/
+venv/
+env/
+ENV/
+
+# === Jupyter ===
+.ipynb_checkpoints/
+
+# === Data ===
+data/
+*.csv
+*.parquet
+*.h5
+*.npy
+
+# === Logs and outputs ===
+logs/
+*.log
+*.out
+*.err
+*.pth
+*.pt
+*.ckpt
+
+# === IDE ===
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Build / dist ===
+build/
+dist/
+*.egg-info/
+
+# === Folders ===
+DeepRockSR-2D/
+images/
+models/
+MRCCM2D/
+preds/
