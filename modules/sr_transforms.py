@@ -56,17 +56,6 @@ class PairUpscaleLRtoHR:
                            antialias=True)
         return lr, hr
 
-class PairRandomCrop:
-    """Согласованный кроп: одна и та же box к LR_up и HR."""
-    def __init__(self, patch_size: Optional[int]):
-        self.ps = patch_size
-    def __call__(self, lr, hr):
-        if self.ps is None:
-            return lr, hr
-        th = tw = self.ps
-        i, j, h, w = T.RandomCrop.get_params(hr, output_size=(th, tw))
-        return TF.crop(lr, i, j, h, w), TF.crop(hr, i, j, h, w)
-
 class PairFlips:
     """Согласованные флипы."""
     def __init__(self, p_flip=0.5, p_vflip=0.5):
@@ -134,7 +123,6 @@ class PairNormalize:
 # ---------- Сборщики пайплайнов ----------
 
 def build_pair_transform(
-    patch_size: Optional[int],
     do_flips: bool = True,
     do_blur: bool = True,
     blur_kernel: int = 3,
@@ -148,13 +136,12 @@ def build_pair_transform(
 ) -> PairCompose:
     """
     Тренировочный пайплайн:
-      Grayscale -> Upscale(LR->HR) -> RandomCrop -> (Flips) -> ToTensor[0,1] -> (Blur) -> (Normalize)
+      Grayscale -> Upscale(LR->HR) -> (Flips) -> ToTensor[0,1] -> (Blur) -> (Normalize)
     """
     stages = []
 
     stages.append(PairGrayscale())  
     stages.append(PairUpscaleLRtoHR())
-    stages.append(PairRandomCrop(patch_size))
     
     if do_flips:
         stages.append(PairFlips())

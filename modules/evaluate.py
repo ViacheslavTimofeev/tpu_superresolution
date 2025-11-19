@@ -57,10 +57,9 @@ def save_tensor_as_png(x: torch.Tensor, path: Path, per_image_rescale: bool = Fa
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data_layout", type=str, choices=["DeepRock", "mrccm"], default="DeepRock",
-                    help="DeepRock (Shuffled2D) или mrccm (MRCCM по z-срезам)")
-    ap.add_argument("--data_root", type=str, default="DeepRockSR-2D")
-    ap.add_argument("--scale", type=str, default="X2")        # X2 или X4
+    ap.add_argument("--sign", type=str, choices=["deeprock_x2", "deeprock_x4", "mrccm"],
+                help="Конфигурация набора данных")
+    ap.add_argument("--data_root", type=str, default="C:/Users/Вячеслав/Documents/superresolution/DeepRockSR-2D")
     ap.add_argument("--batch_size", type=int, default=4)
     ap.add_argument("--workers", type=int, default=0)
     ap.add_argument("--ckpt", type=str, required=True)        # путь к .pt
@@ -71,29 +70,40 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("[device]", device, torch.cuda.get_device_name(0) if device.type == "cuda" else "-")
+    
+    if args.sign in ("deeprock_x2", "deeprock_x4"):
+        dataset_kind = "DeepRock"
+        scale = "X2" if args.sign == "deeprock_x2" else "X4"
+    elif args.sign == "mrccm":
+        dataset_kind = "mrccm"
+        scale = None
+    else:
+        raise ValueError(f"Unknown sign: {args.sign}")
 
     tf_test = build_pair_transform_eval(
         normalize=False,
-        dataset=args.data_layout,
+        dataset=dataset_kind,
         vmin=V_MIN,
-        vmax=V_MAX,)
+        vmax=V_MAX,
+    )
 
-    if args.data_layout == "DeepRock":
+    if dataset_kind == "DeepRock":
         test_ds = Shuffled2DPaired(
             args.data_root,
             split="test",
-            scale=args.scale,
+            scale=scale,
             transform_pair=tf_test,
-        )
-    elif args.data_layout == "mrccm":
+    )
+    elif dataset_kind == "mrccm":
         test_ds = MRCCMPairedByZ(
             Path(args.data_root) / "LR_test",
             Path(args.data_root) / "HR_test",
             transform_pair=tf_test,
-            stride=args.z_stride
+            stride=args.z_stride,
         )
     else:
-        raise ValueError(f"Unknown dataset: {args.dataset}")
+        raise ValueError(f"Unknown dataset_kind: {dataset_kind}")
+
 
     test_loader = DataLoader(
         test_ds, batch_size=args.batch_size, shuffle=False,
@@ -141,7 +151,7 @@ def main():
     
     cfg = UNetConfig(
         in_channels=1, out_channels=1,
-        base_channels=64, depth=4,
+        base_channels=32, depth=4,
         norm_enc=False, norm_dec=False,
         up_mode="pixelshuffle", dropout=0.0
     )
@@ -188,21 +198,18 @@ def main():
             ssim_vals.append(ssim(pred, hr, data_range=1.0, size_average=True))
 
             # сохранить несколько примеров
-            # сохранить несколько примеров
             if saved < args.save_n:
                 for b in range(min(pred.size(0), args.save_n - saved)):
-                    # ИСПОЛЬЗУЕМ saved ДЛЯ УНИКАЛЬНОГО ИМЕНИ
-                    # stem = Path(name[b]).stem  <-- ЭТА СТРОКА ВЫЗЫВАЛА ОШИБКУ
-                    stem = f"sample_{saved}"     # <-- ИСПРАВЛЕНИЕ: уникальный индекс
+                    stem = f"sample_{saved}"
                     
                     # для MRCCM хотим "как TIFF" → включаем per_image_rescale
-                    per_rescale = (args.data_layout == "mrccm")
-                    
+                    per_rescale = (dataset_kind == "mrccm")
+
                     save_tensor_as_png(lr[b],   out_dir / f"{stem}_lr.png",   per_image_rescale=per_rescale)
                     save_tensor_as_png(pred[b], out_dir / f"{stem}_pred.png", per_image_rescale=per_rescale)
                     save_tensor_as_png(hr[b],   out_dir / f"{stem}_hr.png",   per_image_rescale=per_rescale)
                     
-                    saved += 1 # Увеличиваем глобальный счетчик
+                    saved += 1
                     
                     if saved >= args.save_n:
                         break

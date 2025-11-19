@@ -20,7 +20,6 @@ def _open_pil(p: Path) -> Image.Image:
     with Image.open(p) as im:
         return im.copy()
 
-
 def _get_dirs_deeprock(root: str, split: str, scale: str) -> Tuple[Path, Path]:
     root = Path(root)
     hr_dir = root / "shuffled2D" / f"shuffled2D_{split}_HR"
@@ -183,7 +182,7 @@ class MRCCMPairedByZ(Dataset):
         hr = _open_pil(hr_path)
         if self.transform_pair:
             lr, hr = self.transform_pair(lr, hr)
-        return lr, 
+        return lr, hr
 
 
 class DeepRockPatchIterable(IterableDataset):
@@ -308,3 +307,18 @@ class DeepRockPatchIterable(IterableDataset):
                 lr_patch = lr_t[..., top:top + ps, left:left + ps]
                 hr_patch = hr_t[..., top:top + ps, left:left + ps]
                 yield lr_patch, hr_patch
+
+
+class DeepRockPrecomputedPatches(Dataset):
+    def __init__(self, path: str):
+        data = torch.load(path, map_location="cpu")
+        self.lr = data["lr"]  # uint8 [N,1,ps,ps]
+        self.hr = data["hr"]
+
+    def __len__(self):
+        return self.lr.shape[0]
+
+    def __getitem__(self, idx):
+        lr = self.lr[idx].float() / 255.0
+        hr = self.hr[idx].float() / 255.0
+        return lr, hr
