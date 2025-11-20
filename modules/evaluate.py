@@ -151,7 +151,7 @@ def main():
     
     cfg = UNetConfig(
         in_channels=1, out_channels=1,
-        base_channels=32, depth=4,
+        base_channels=64, depth=4,
         norm_enc=False, norm_dec=False,
         up_mode="pixelshuffle", dropout=0.0
     )
