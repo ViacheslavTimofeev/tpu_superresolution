@@ -22,12 +22,13 @@ def _open_pil(p: Path) -> Image.Image:
 
 def _get_dirs_deeprock(root: str, split: str, scale: str) -> Tuple[Path, Path]:
     root = Path(root)
+    
     hr_dir = root / "shuffled2D" / f"shuffled2D_{split}_HR"
     lr_dir = root / "shuffled2D" / f"shuffled2D_{split}_LR_default_{scale}"
-    if not lr_dir.exists():
-        fb = root / "shuffled2D" / f"shuffled2D_{split}_LR_default_X2"
-        if fb.exists():
-            lr_dir = fb
+    '''
+    hr_dir = root / "carbonate2D" / f"carbonate2D_{split}_HR"
+    lr_dir = root / "carbonate2D" / f"carbonate2D_{split}_LR_default_{scale}"
+    '''
     if not (hr_dir.exists() and lr_dir.exists()):
         raise FileNotFoundError(f"Не найдены HR/LR директории для split={split}, scale={scale}")
     return hr_dir, lr_dir

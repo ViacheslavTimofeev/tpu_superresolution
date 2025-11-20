@@ -1,3 +1,6 @@
+"""
+Проверка качества сохраненных моделей.
+"""
 import os, argparse, math, time, re
 from pathlib import Path
 from typing import Tuple, Optional, Callable

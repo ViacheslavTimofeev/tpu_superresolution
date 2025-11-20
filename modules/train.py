@@ -1,3 +1,6 @@
+"""
+Универсальный модуль обучения моделей, поддерживает разные форматы и размеры данных.
+"""
 import os, time, math, argparse, random, re
 from pathlib import Path
 from typing import Tuple, Optional, Callable

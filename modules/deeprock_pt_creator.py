@@ -1,3 +1,7 @@
+"""
+Создает .pt-файл с готовыми парами HR-LR. В теории может дать ускорение при загрузке в pytorch Dataset.
+Создается без аугментаций (только с обязательными трансформами)
+"""
 from pathlib import Path
 import torch
 from PIL import Image
