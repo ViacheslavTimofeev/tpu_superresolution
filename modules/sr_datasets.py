@@ -25,10 +25,10 @@ def _get_dirs_deeprock(root: str, split: str, scale: str) -> Tuple[Path, Path]:
     
     hr_dir = root / "shuffled2D" / f"shuffled2D_{split}_HR"
     lr_dir = root / "shuffled2D" / f"shuffled2D_{split}_LR_default_{scale}"
-    '''
-    hr_dir = root / "carbonate2D" / f"carbonate2D_{split}_HR"
-    lr_dir = root / "carbonate2D" / f"carbonate2D_{split}_LR_default_{scale}"
-    '''
+    """
+    hr_dir = root / "carbonate2D" / f"carbonate2D_{split}_HR_micro"
+    lr_dir = root / "carbonate2D" / f"carbonate2D_{split}_LR_default_{scale}_micro"
+    """
     if not (hr_dir.exists() and lr_dir.exists()):
         raise FileNotFoundError(f"Не найдены HR/LR директории для split={split}, scale={scale}")
     return hr_dir, lr_dir
@@ -40,6 +40,46 @@ def _strip_lr_suffix(stem: str, scale: str) -> str:
     # убираем хвост "_x2"/"-x2"/"x2"
     return re.sub(fr'([_-]?){re.escape(suf)}$', '', stem, flags=re.IGNORECASE)
 
+def _get_dirs_deeprock_patches(root: str, split: str, scale: str | None = None) -> Tuple[Path, Path]:
+    """
+    Для патчей, сохранённых диском:
+
+        root/
+          HR_train/
+          HR_valid/
+          LR_train/
+          LR_valid/
+
+    split ∈ {"train", "valid"}.
+    scale сейчас не используется, оставлен для интерфейсной совместимости.
+    """
+    root = Path(root)
+
+    if split == "train":
+        hr_dir = root / "HR_train"
+        lr_dir = root / "LR_train"
+    elif split == "valid":
+        hr_dir = root / "HR_valid"
+        lr_dir = root / "LR_valid"
+    else:
+        raise ValueError(f"Unknown split={split!r} for deeprock_patches")
+
+    if not hr_dir.exists():
+        raise FileNotFoundError(f"Нет папки с HR-патчами: {hr_dir}")
+    if not lr_dir.exists():
+        raise FileNotFoundError(f"Нет папки с LR-патчами: {lr_dir}")
+
+    return hr_dir, lr_dir
+
+
+def _strip_patch_suffix(stem: str) -> str:
+    """
+    Убираем суффиксы _HR / _LR в конце имени патча.
+    Например:
+      'block01_p000010_HR' -> 'block01_p000010'
+      'block01_p000010_LR' -> 'block01_p000010'
+    """
+    return re.sub(r"_(HR|LR)$", "", stem, flags=re.IGNORECASE)
 
 def compute_patch_grid(h: int, w: int, patch_size: int):
     """
@@ -127,6 +167,70 @@ class Shuffled2DPaired(Dataset):
             lr, hr = self.transform_pair(lr, hr)  # тензоры
         return lr, hr
 
+class DeepRockDiskPatchPairs(Dataset):
+    """
+    Датасет для дисковых патчей DeepRock:
+
+        data_root/
+          HR_train/
+          HR_valid/
+          LR_train/
+          LR_valid/
+
+    split определяет какую пару директорий использовать.
+    Пары LR↔HR сопоставляются по базовому имени без суффиксов _HR/_LR.
+    """
+
+    def __init__(
+        self,
+        root: str,
+        split: str = "train",
+        scale: str = "X4",
+        transform_pair: Optional[Callable] = None,
+        exts: Tuple[str, ...] = EXTS,
+    ):
+        self.hr_dir, self.lr_dir = _get_dirs_deeprock_patches(root, split, scale)
+        self.exts = exts
+        self.transform_pair = transform_pair
+
+        hr_files = sorted([p for p in self.hr_dir.iterdir() if p.suffix.lower() in exts])
+        if not hr_files:
+            raise RuntimeError(f"Нет HR-патчей в {self.hr_dir}")
+        hr_map = {_strip_patch_suffix(p.stem): p for p in hr_files}
+
+        lr_files = sorted([p for p in self.lr_dir.iterdir() if p.suffix.lower() in exts])
+        if not lr_files:
+            raise RuntimeError(f"Нет LR-патчей в {self.lr_dir}")
+        lr_map = {_strip_patch_suffix(p.stem): p for p in lr_files}
+
+        common_keys = sorted(set(hr_map.keys()) & set(lr_map.keys()))
+        if not common_keys:
+            raise RuntimeError("Не найдено пар LR↔HR по базовым именам (_HR/_LR).")
+
+        self.pairs = [(lr_map[k], hr_map[k]) for k in common_keys]
+
+    def __len__(self) -> int:
+        return len(self.pairs)
+
+    @staticmethod
+    def _open_raw(p: Path) -> Image.Image:
+        with Image.open(p) as img:
+            return img.copy()
+
+    def __getitem__(self, idx: int):
+        lr_path, hr_path = self.pairs[idx]
+        lr = self._open_raw(lr_path)
+        hr = self._open_raw(hr_path)
+
+        if self.transform_pair is not None:
+            lr_t, hr_t = self.transform_pair(lr, hr)
+            return lr_t, hr_t
+
+        # fallback: ч/б [0,1]
+        hr = TF.to_dtype(TF.to_image(hr.convert("L")), torch.float32, scale=True)
+        lr = TF.to_dtype(TF.to_image(lr.convert("L")), torch.float32, scale=True)
+        return lr, hr
+
 
 class MRCCMPairedByZ(Dataset):
     """
@@ -204,7 +308,7 @@ class DeepRockPatchIterable(IterableDataset):
         root: str,
         split: str = "train",
         scale: str = "X2",
-        patch_size: int = 128,
+        patch_size: int = 100,
         transform_pair: Optional[Callable] = None,
         pad_mode: str = "reflect",
         shuffle_images: bool = True,

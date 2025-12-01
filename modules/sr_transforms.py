@@ -56,6 +56,55 @@ class PairUpscaleLRtoHR:
                            antialias=True)
         return lr, hr
 
+class PairRandomCrop:
+    """
+    Согласованный RandomCrop для пары (LR, HR).
+
+    Предполагает, что LR и HR уже приведены к одному размеру
+    (например, после PairUpscaleLRtoHR), и вырезает один и тот же
+    прямоугольник из обоих изображений.
+    """
+    def __init__(self, size: int | Tuple[int, int]):
+        if isinstance(size, int):
+            self.size = (size, size)
+        else:
+            self.size = tuple(size)
+
+    def __call__(self, lr, hr):
+        th, tw = self.size  # target height/width
+
+        # Определяем текущий размер
+        if isinstance(hr, Image.Image):
+            w, h = hr.size   # PIL: (W, H)
+        else:
+            # torch.Tensor: (..., H, W)
+            h, w = hr.shape[-2], hr.shape[-1]
+
+        # Если патч совпадает с размером изображения — ничего не делаем
+        if h == th and w == tw:
+            return lr, hr
+
+        # Если патч больше изображения — просто центр-кроп по минимальному размеру
+        if h < th or w < tw:
+            th = min(th, h)
+            tw = min(tw, w)
+            top = max(0, (h - th) // 2)
+            left = max(0, (w - tw) // 2)
+        else:
+            # Случайный сдвиг так, чтобы патч целиком лежал внутри
+            top = int(torch.randint(0, h - th + 1, (1,)).item())
+            left = int(torch.randint(0, w - tw + 1, (1,)).item())
+
+        if isinstance(hr, Image.Image):
+            hr = TF.crop(hr, top, left, th, tw)
+            lr = TF.crop(lr, top, left, th, tw)
+        else:
+            # Для тензоров режем по последним двум осям (..., H, W)
+            hr = hr[..., top:top + th, left:left + tw]
+            lr = lr[..., top:top + th, left:left + tw]
+
+        return lr, hr
+
 class PairFlips:
     """Согласованные флипы."""
     def __init__(self, p_flip=0.5, p_vflip=0.5):
@@ -131,6 +180,7 @@ def build_pair_transform(
     std: Tuple[float, ...]  = (0.20893379,),
     normalize: bool = False,
     dataset: str = "DeepRock",
+    patch_size: Optional[int] = None,
     vmin: float | None = None,
     vmax: float | None = None
 ) -> PairCompose:
@@ -142,7 +192,9 @@ def build_pair_transform(
 
     stages.append(PairGrayscale())  
     stages.append(PairUpscaleLRtoHR())
-    
+
+    if patch_size is not None:
+        stages.append(PairRandomCrop(patch_size))
     if do_flips:
         stages.append(PairFlips())
     stages.append(PairToTensor01())

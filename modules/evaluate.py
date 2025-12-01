@@ -13,7 +13,9 @@ from PIL import Image
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import v2 as T
 from torchvision.transforms.v2 import functional as F
+
 from unet2d import UNet2D, UNetConfig
+from ms_resunet import SRCNN
 
 from sr_transforms import build_pair_transform_eval
 from sr_datasets import Shuffled2DPaired, MRCCMPairedByZ
@@ -137,17 +139,21 @@ def main():
 
     # --- Bicubic baseline (LR upscaled = prediction) ---
     @torch.no_grad()
-    def eval_bicubic_baseline(test_loader, device, mean=(0.45161797,), std=(0.20893379,)):
+    def eval_bicubic_baseline(test_loader, device):
         psnrs, ssims = [], []
         for (lr, hr) in test_loader:
-            # lr/hr уже нормализованы и LR апскейлен до HR в трансформе
-            lr = lr.to(device); hr = hr.to(device)
-            # метрики
-            #psnrs.append(psnr(lr_dn, hr_dn, max_val=1.0))
-            #ssims.append(ssim(lr_dn, hr_dn, data_range=1.0, size_average=True))
+            # всегда float32
+            lr = lr.to(device, dtype=torch.float32)
+            hr = hr.to(device, dtype=torch.float32)
+    
             psnrs.append(psnr(lr, hr, max_val=1.0))
-            ssims.append(ssim(lr, hr, data_range=1.0, size_average=True))
+    
+            # pytorch_msssim иногда дергает autocast, поэтому лучше явно выключить
+            with torch.amp.autocast(device_type="cuda", enabled=False):
+                ssims.append(ssim(lr, hr, data_range=1.0, size_average=True))
+    
         return sum(psnrs) / len(psnrs), sum(ssims) / len(ssims)
+
     
     bic_psnr, bic_ssim = eval_bicubic_baseline(test_loader, device)
     print(f"[baseline] Bicubic PSNR: {bic_psnr:.2f} dB | SSIM: {bic_ssim:.4f}")
@@ -158,8 +164,10 @@ def main():
         norm_enc=False, norm_dec=False,
         up_mode="pixelshuffle", dropout=0.0
     )
-    model = UNet2D(cfg).to(device)
-
+    
+    #model = UNet2D(cfg).to(device)
+    model = SRCNN().to(device)
+    
     # --- загрузка чекпойнта (.pt) ---
     ckpt = torch.load(args.ckpt, map_location="cpu")
     if isinstance(ckpt, dict) and "model" in ckpt:
@@ -180,26 +188,34 @@ def main():
         for (lr, hr) in test_loader:
             lr = lr.to(device, non_blocking=True)
             hr = hr.to(device, non_blocking=True)
-            name = [f"sample_{i}" for i in range(lr.size(0))]
-            with torch.amp.autocast("cuda", enabled=(device.type=="cuda")):
+    
+            with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
                 pred = model(lr)
                 if not torch.isfinite(pred).all():
                     bad = (~torch.isfinite(pred)).float().mean().item()
                     pmin = torch.nanmin(pred).item()
                     pmax = torch.nanmax(pred).item()
-                    raise RuntimeError(f"Pred has non-finite values: share={bad:.6f}, min={pmin:.4g}, max={pmax:.4g}")
-
-            # выровнять spatial, если надо
+                    raise RuntimeError(
+                        f"Pred has non-finite values: share={bad:.6f}, min={pmin:.4g}, max={pmax:.4g}"
+                    )
+    
+            # выравниваем spatial, если нужно
             if pred.shape[-2:] != hr.shape[-2:]:
                 pred = torch.nn.functional.interpolate(
                     pred, size=hr.shape[-2:], mode="bilinear", align_corners=False
                 )
-
-            #psnr_vals.append(psnr(pred_dn, hr_dn, max_val=1.0))
-            #ssim_vals.append(ssim(pred_dn, hr_dn, data_range=1.0, size_average=True))
-            psnr_vals.append(psnr(pred, hr, max_val=1.0))
-            ssim_vals.append(ssim(pred, hr, data_range=1.0, size_average=True))
-
+    
+            # ❶ для метрик всегда используем float32
+            pred_f = pred.to(dtype=torch.float32)
+            hr_f   = hr.to(dtype=torch.float32)
+    
+            # ❷ psnr можно спокойно считать в float32
+            psnr_vals.append(psnr(pred_f, hr_f, max_val=1.0))
+    
+            # ❸ SSIM — только с отключенным autocast
+            with torch.amp.autocast(device_type="cuda", enabled=False):
+                ssim_vals.append(ssim(pred_f, hr_f, data_range=1.0, size_average=True))
+    
             # сохранить несколько примеров
             if saved < args.save_n:
                 for b in range(min(pred.size(0), args.save_n - saved)):

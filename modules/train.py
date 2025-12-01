@@ -18,13 +18,14 @@ from torchvision.transforms import v2 as T
 from torchvision.transforms.v2 import functional as TF
 import torch.nn.functional as F
 
-from unet2d import UNet2D, UNetConfig 
+from unet2d import UNet2D, UNetConfig
+from ms_resunet import SRCNN
 
 import copy
 from datetime import timedelta
 
 from sr_transforms import build_pair_transform
-from sr_datasets import Shuffled2DPaired, MRCCMPairedByZ, DeepRockPatchIterable, DeepRockPrecomputedPatches
+from sr_datasets import Shuffled2DPaired, MRCCMPairedByZ, DeepRockPatchIterable, DeepRockPrecomputedPatches, DeepRockDiskPatchPairs
 
 V_MIN = 8557.25
 V_MAX = 47033.0
@@ -207,8 +208,8 @@ def validate(model, loader, device, loss_fn):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_root", type=str, required=True)
-    ap.add_argument("--sign", type=str, choices=["deeprock_x2", "deeprock_x4", "mrccm"],
-                    help="Конфигурация набора данных")
+    ap.add_argument("--sign", type=str, choices=["deeprock_x2", "deeprock_x4", "deeprock_patches_x4", "mrccm"],
+                help="Конфигурация набора данных")
     ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--scheduler", type=str, choices=["OneCycle", "Exponential", "None"], default="Exponential")
     ap.add_argument("--batch_size", type=int, default=8)
@@ -228,6 +229,9 @@ def main():
     ap.add_argument("--z_end", type=int, default=None)
     ap.add_argument("--z_stride", type=int, default=1)
     ap.add_argument("--precomputed_patches", type=str, default=None)
+    ap.add_argument("--resume", type=str, default=None,
+                help="Путь к .pt с ключом 'model' для дообучения")
+
 
     args = ap.parse_args()
 
@@ -254,17 +258,37 @@ def main():
         raise ValueError(f"Unknown loss: {args.loss}")
 
     # --- декодируем sign -> (dataset_kind, scale) ---
-    if args.sign in ("deeprock_x2", "deeprock_x4"):
+    if args.sign in ("deeprock_x2", "deeprock_x4", "deeprock_patches_x4"):
         dataset_kind = "DeepRock"
-        scale = "X2" if args.sign == "deeprock_x2" else "X4"
+        if args.sign == "deeprock_x2":
+            scale = "X2"
+        else:
+            scale = "X4"  # и для обычного x4, и для патчевого x4
     elif args.sign == "mrccm":
         dataset_kind = "mrccm"
         scale = None
     else:
         raise ValueError(f"Unknown sign: {args.sign}")
 
+    # для патчевого режима не делаем RandomCrop в трансформах
+    if args.sign == "deeprock_patches_x4":
+        patch_size_train = None
+    else:
+        patch_size_train = 96
+
+    pair_tf_train = build_pair_transform(
+        patch_size=patch_size_train,
+        do_flips=args.do_flips,
+        do_blur=args.do_blur,
+        dataset=dataset_kind,
+        vmin=V_MIN,
+        vmax=V_MAX,
+        normalize=False,
+    )
+
     # --- трансформы зависят только от dataset_kind ---
     pair_tf_train = build_pair_transform(
+        patch_size=96,
         do_flips=args.do_flips,
         do_blur=args.do_blur,
         dataset=dataset_kind,
@@ -281,28 +305,39 @@ def main():
         normalize=False,
     )
 
-    # --- составляем train_ds / valid_ds по sign ---
     if dataset_kind == "DeepRock":
-        # DeepRock: патчи через DeepRockPatchIterable и вал по целым картинкам:
-        if args.precomputed_patches is not None:
-            train_ds = DeepRockPrecomputedPatches(args.precomputed_patches)
-        else:
-            train_ds = DeepRockPatchIterable(
+        if args.sign == "deeprock_patches_x4":
+            # Патчевое обучение с готовых патчей на диске
+            # Ожидаем структуру DeepRockSR-2D_patches/{HR_train,HR_valid,LR_train,LR_valid}
+            train_ds = DeepRockDiskPatchPairs(
                 root=args.data_root,
                 split="train",
                 scale=scale,
-                patch_size=args.patch_size,
                 transform_pair=pair_tf_train,
-                pad_mode="reflect",
-                shuffle_images=True,
-                shuffle_patches=False,
             )
-        valid_ds = Shuffled2DPaired(
-            args.data_root,
-            split="valid",
-            scale=scale,
-            transform_pair=pair_tf_valid,
-        )
+            valid_ds = DeepRockDiskPatchPairs(
+                root=args.data_root,
+                split="valid",
+                scale=scale,
+                transform_pair=pair_tf_valid,
+            )
+        else:
+            # Обычный режим: precomputed .pt или Shuffled2DPaired по большим изображениям
+            if args.precomputed_patches is not None:
+                train_ds = DeepRockPrecomputedPatches(args.precomputed_patches)
+            else:
+                train_ds = Shuffled2DPaired(
+                    args.data_root,
+                    split="train",
+                    scale=scale,
+                    transform_pair=pair_tf_train,
+                )
+            valid_ds = Shuffled2DPaired(
+                args.data_root,
+                split="valid",
+                scale=scale,
+                transform_pair=pair_tf_valid,
+            )
 
 
     elif dataset_kind == "mrccm":
@@ -349,8 +384,16 @@ def main():
         norm_enc=False, norm_dec=False,
         up_mode="pixelshuffle",
     )
-    model = UNet2D(cfg).to(device)
-
+    #model = UNet2D(cfg).to(device)
+    model = SRCNN().to(device)
+    
+    # === Загрузка чекпоинта для дообучения ===
+    if args.resume is not None:
+        ckpt = torch.load(args.resume, map_location=device)
+        state = ckpt.get("model", ckpt)
+        model.load_state_dict(state, strict=True)
+        print(f"[ckpt] loaded weights from {args.resume}")
+    
     opt = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # --- scheduler ---
