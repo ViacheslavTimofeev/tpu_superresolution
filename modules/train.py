@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from pytorch_msssim import ssim as ssim_ms
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset
 from torch.optim.lr_scheduler import OneCycleLR
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import v2 as T
@@ -92,13 +92,24 @@ class ComboLoss(nn.Module):
 
 # ====== 5) DataLoader ======
 def make_loader(ds, batch_size, workers, pin=True, shuffle=False, drop_last=False, persistent=False):
+    is_iterable = isinstance(ds, IterableDataset)
+
     kwargs = dict(
-        dataset=ds, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last,
-        num_workers=workers, pin_memory=pin, persistent_workers=persistent,
+        dataset=ds,
+        batch_size=batch_size,
+        shuffle=(False if is_iterable else shuffle),  # для IterableDataset shuffle запрещён
+        drop_last=drop_last,
+        num_workers=workers,
+        pin_memory=pin,
     )
-    if workers and workers > 0:
+
+    # persistent_workers для IterableDataset обычно не нужен
+    if workers and workers > 0 and (not is_iterable):
+        kwargs["persistent_workers"] = persistent
         kwargs["prefetch_factor"] = 2
+
     return DataLoader(**kwargs)
+
 
 # ====== 6) Профилирование загрузки ======
 @torch.no_grad()
@@ -231,6 +242,9 @@ def main():
     ap.add_argument("--precomputed_patches", type=str, default=None)
     ap.add_argument("--resume", type=str, default=None,
                 help="Путь к .pt с ключом 'model' для дообучения")
+    ap.add_argument("--patch_iter", action="store_true",
+                help="Патчевое обучение на DeepRock через DeepRockPatchIterable (полное покрытие патчами).",
+    )
 
 
     args = ap.parse_args()
@@ -269,12 +283,15 @@ def main():
         scale = None
     else:
         raise ValueError(f"Unknown sign: {args.sign}")
-
+        
     # для патчевого режима не делаем RandomCrop в трансформах
-    if args.sign == "deeprock_patches_x4":
+    # --- трансформы зависят от dataset_kind и патчевого режима ---
+
+    # для дисковых патчей и iterable-патчей RandomCrop в трансформах не нужен
+    if args.sign == "deeprock_patches_x4" or (dataset_kind == "DeepRock" and args.patch_iter):
         patch_size_train = None
     else:
-        patch_size_train = 96
+        patch_size_train = 96  # можешь заменить на args.patch_size, если хочешь управлять из CLI
 
     pair_tf_train = build_pair_transform(
         patch_size=patch_size_train,
@@ -286,16 +303,6 @@ def main():
         normalize=False,
     )
 
-    # --- трансформы зависят только от dataset_kind ---
-    pair_tf_train = build_pair_transform(
-        patch_size=96,
-        do_flips=args.do_flips,
-        do_blur=args.do_blur,
-        dataset=dataset_kind,
-        vmin=V_MIN,
-        vmax=V_MAX,
-        normalize=False,
-    )
     pair_tf_valid = build_pair_transform(
         do_flips=False,
         do_blur=False,
@@ -305,10 +312,10 @@ def main():
         normalize=False,
     )
 
+
     if dataset_kind == "DeepRock":
         if args.sign == "deeprock_patches_x4":
             # Патчевое обучение с готовых патчей на диске
-            # Ожидаем структуру DeepRockSR-2D_patches/{HR_train,HR_valid,LR_train,LR_valid}
             train_ds = DeepRockDiskPatchPairs(
                 root=args.data_root,
                 split="train",
@@ -322,16 +329,33 @@ def main():
                 transform_pair=pair_tf_valid,
             )
         else:
-            # Обычный режим: precomputed .pt или Shuffled2DPaired по большим изображениям
+            # Обычный DeepRock: либо precomputed .pt, либо Iterable-патчи, либо full-size Shuffled
             if args.precomputed_patches is not None:
                 train_ds = DeepRockPrecomputedPatches(args.precomputed_patches)
+
+            elif args.patch_iter:
+                # DeepRockPatchIterable 
+                train_ds = DeepRockPatchIterable(
+                    root=args.data_root,
+                    split="train",
+                    scale=scale,
+                    patch_size=args.patch_size,    # 100 для патчей 100x100
+                    transform_pair=pair_tf_train,  # без RandomCrop
+                    pad_mode="reflect",
+                    shuffle_images=True,
+                    shuffle_patches=False,          # можешь включить True, если хочешь
+                )
+
             else:
+                # классический случай: одна картинка = один sample
                 train_ds = Shuffled2DPaired(
                     args.data_root,
                     split="train",
                     scale=scale,
                     transform_pair=pair_tf_train,
                 )
+
+            # Валидация — по крупным изображениям, как и раньше
             valid_ds = Shuffled2DPaired(
                 args.data_root,
                 split="valid",
@@ -364,9 +388,12 @@ def main():
     # --- DataLoader для всех случаев одинаковый ---
     train_loader = make_loader(
         train_ds, args.batch_size, args.workers,
-        pin=not args.no_pin, shuffle=False, drop_last=False,
+        pin=not args.no_pin,
+        shuffle=True,
+        drop_last=False,
         persistent=not args.no_persistent,
     )
+
     valid_loader = make_loader(
         valid_ds, max(1, args.batch_size // 2), args.workers,
         pin=not args.no_pin, shuffle=False, drop_last=False,

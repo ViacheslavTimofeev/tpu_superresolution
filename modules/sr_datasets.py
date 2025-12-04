@@ -22,9 +22,14 @@ def _open_pil(p: Path) -> Image.Image:
 
 def _get_dirs_deeprock(root: str, split: str, scale: str) -> Tuple[Path, Path]:
     root = Path(root)
+    """
+    hr_dir = Path("C:/Users/Вячеслав/Documents/superresolution/DeepRockSR-2D_patches") / f"HR_{split}"
+    lr_dir = Path("C:/Users/Вячеслав/Documents/superresolution/DeepRockSR-2D_patches") / f"LR_{split}"
+    """
     
     hr_dir = root / "shuffled2D" / f"shuffled2D_{split}_HR"
     lr_dir = root / "shuffled2D" / f"shuffled2D_{split}_LR_default_{scale}"
+    
     """
     hr_dir = root / "carbonate2D" / f"carbonate2D_{split}_HR_micro"
     lr_dir = root / "carbonate2D" / f"carbonate2D_{split}_LR_default_{scale}_micro"
@@ -427,3 +432,62 @@ class DeepRockPrecomputedPatches(Dataset):
         lr = self.lr[idx].float() / 255.0
         hr = self.hr[idx].float() / 255.0
         return lr, hr
+
+class MSResUNetPNGDataset(Dataset):
+    """
+    Для каждого файла PNG из директории:
+      - читаем его как HR (внутри preprocess_msresunet_png);
+      - строим LR через down+up bicubic с заданным upscale_factor;
+      - переводим обе картинки в YCbCr и берём только Y-канал;
+      - делим на 255 → тензоры (1, H, W) с диапазоном примерно [0.06, 0.92].
+
+    Параметры
+    ---------
+    root : str | Path
+        Путь к директории, где лежат HR PNG-изображения.
+        Используются только файлы с расширением ".png".
+    upscale_factor : int
+        Во сколько раз HR больше "идеального" LR по каждой оси
+        (обычно 2 или 4).
+    image_size : Optional[int]
+        Если задано, HR изображение предварительно приводится к
+        квадрату image_size x image_size bicubic-интерполяцией
+        (без кропа). Если None — используется исходный размер PNG.
+    """
+
+    def __init__(
+        self,
+        root: str | Path,
+        upscale_factor: int
+    ) -> None:
+        super().__init__()
+
+        self.root = Path(root)
+        self.upscale_factor = int(upscale_factor)
+
+        if not self.root.is_dir():
+            raise FileNotFoundError(f"Директория с данными не найдена: {self.root}")
+
+        # Берём только PNG, т.к. ты говоришь, что исходные данные именно PNG
+        self.files: List[Path] = sorted(
+            [p for p in self.root.iterdir() if p.is_file() and p.suffix.lower() == ".png"]
+        )
+
+        if not self.files:
+            raise RuntimeError(f"В директории {self.root} не найдено ни одного PNG-файла.")
+
+    def __len__(self) -> int:
+        return len(self.files)
+
+    def __getitem__(self, index: int):
+        path = self.files[index]
+
+        # preprocess_msresunet_png:
+        #   PNG -> RGB ->
+        #   LR = down+up bicubic ->
+        #   обе в YCbCr -> Y-канал -> /255 -> (1,H,W)
+        lr_y, hr_y = preprocess_msresunet_png(
+            path=str(path),
+            upscale_factor=self.upscale_factor
+        )
+        return lr_y, hr_y

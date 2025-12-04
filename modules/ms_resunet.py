@@ -1,53 +1,7 @@
 from math import sqrt
-
 import torch
 from torch import nn
 import torch.nn.functional as F
-
-class SRCNN1(nn.Module):
-    def __init__(self) -> None:
-        super(SRCNN1, self).__init__()
-        # Feature extraction layer.
-        self.features = nn.Sequential(
-            nn.Conv2d(1, 64, (9, 9), (1, 1), (4, 4)),
-            nn.ReLU(True)
-        )
-
-        # Non-linear mapping layer.
-        self.map = nn.Sequential(
-            nn.Conv2d(64, 32, (5, 5), (1, 1), (2, 2)),
-            nn.ReLU(True)
-        )
-
-        # Rebuild the layer.
-        self.reconstruction = nn.Conv2d(32, 1, (5, 5), (1, 1), (2, 2))
-
-        # Initialize model weights.
-        self._initialize_weights()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self._forward_impl(x)
-
-    # Support torch.script function.
-    def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.features(x)
-        out = self.map(out)
-        out = self.reconstruction(out)
-
-        return out
-
-    # The filter weight of each layer is a Gaussian distribution with zero mean and
-    # standard deviation initialized by random extraction 0.001 (deviation is 0)
-    def _initialize_weights(self) -> None:
-        for module in self.modules():
-            if isinstance(module, nn.Conv2d):
-                nn.init.normal_(module.weight.data, 0.0, sqrt(2 / (module.out_channels * module.weight.data[0][0].numel())))
-                nn.init.zeros_(module.bias.data)
-
-        nn.init.normal_(self.reconstruction.weight.data, 0.0, 0.001)
-        nn.init.zeros_(self.reconstruction.bias.data)
-
-
 import numpy as np
 
 
@@ -197,8 +151,9 @@ class Bottleneck(nn.Module):        #--->(Bottleneck(16, 16, stride=1, downsampl
 class RefineNet(nn.Module):
 
     def __init__(self, block, layers):     #---->(Bottleneck, [3, 4, 23, 3])
-        self.inplanes = 16
         super(RefineNet, self).__init__()
+        """
+        self.inplanes = 16
         #self.do = nn.Dropout(p=0.5)
         self.do = nn.Identity()
         self.conv1 = nn.Conv2d(1, 16, kernel_size=5, stride=1, padding=1,
@@ -210,11 +165,13 @@ class RefineNet(nn.Module):
         self.layer2 = self._make_layer(block, 32, layers[1], stride=2)        #---->(Bottleneck, 32, [4)
         self.layer3 = self._make_layer(block, 64, layers[2], stride=2)        #---->(Bottleneck, 64, [23])
         self.layer4 = self._make_layer(block, 128, layers[3], stride=2)       #---->(Bottleneck,128, [3])
+        
         self.p_ims1d2_outl1_dimred = conv3x3(512, 128, bias=False)
         self.adapt_stage1_b = self._make_rcu(128, 128, 2, 2)
         self.mflow_conv_g1_pool = self._make_crp(128, 128, 4)
         self.mflow_conv_g1_b = self._make_rcu(128, 128, 3, 2)
         self.mflow_conv_g1_b3_joint_varout_dimred = conv3x3(128, 64, bias=False)
+        
         self.p_ims1d2_outl2_dimred = conv3x3(256, 64, bias=False)
         self.adapt_stage2_b = self._make_rcu(64, 64, 2, 2)
         self.adapt_stage2_b2_joint_varout_dimred = conv3x3(64, 64, bias=False)
@@ -240,7 +197,73 @@ class RefineNet(nn.Module):
 
         self.clf_conv2 = nn.Conv2d(32, 1, kernel_size=3, stride=1,
                                   padding=2, bias=True)
+        """
+        self.inplanes = 32
+        #self.do = nn.Dropout(p=0.5)
+        self.do = nn.Identity()
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=5, stride=1, padding=1,
+                               bias=False)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.relu = nn.ReLU(inplace=True)
+        
+        self.upCT4 = nn.ConvTranspose2d(128, 128, kernel_size=4, stride=2, padding=1)
+        self.upCT3 = nn.ConvTranspose2d(128, 128, kernel_size=4, stride=2, padding=1)
+        self.upCT2 = nn.ConvTranspose2d(128, 128, kernel_size=4, stride=2, padding=1)
+        
+        #self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.layer1 = self._make_layer(block, 32, layers[0])                  #---->(Bottleneck, 16, [3])
+        self.layer2 = self._make_layer(block, 64, layers[1], stride=2)        #---->(Bottleneck, 32, [4)
+        self.layer3 = self._make_layer(block, 128, layers[2], stride=2)        #---->(Bottleneck, 64, [23])
+        self.layer4 = self._make_layer(block, 256, layers[3], stride=2)       #---->(Bottleneck,128, [3])
+        
+        self.p_ims1d2_outl1_dimred = conv3x3(1024, 256, bias=False)
+        self.adapt_stage1_b = self._make_rcu(256, 256, 2, 2)
+        self.mflow_conv_g1_pool = self._make_crp(256, 256, 4)
+        self.mflow_conv_g1_b = self._make_rcu(256, 256, 3, 2)
+        self.mflow_conv_g1_b3_joint_varout_dimred = conv3x3(256, 128, bias=False)
+        
+        self.p_ims1d2_outl2_dimred = conv3x3(512, 128, bias=False)
+        self.adapt_stage2_b = self._make_rcu(128, 128, 2, 2)
+        self.adapt_stage2_b2_joint_varout_dimred = conv3x3(128, 128, bias=False)
+        self.mflow_conv_g2_pool = self._make_crp(128, 128, 4)
+        self.mflow_conv_g2_b = self._make_rcu(128, 128, 3, 2)
+        self.mflow_conv_g2_b3_joint_varout_dimred = conv3x3(128, 128, bias=False)
 
+        self.p_ims1d2_outl3_dimred = conv3x3(256, 128, bias=False)
+        self.adapt_stage3_b = self._make_rcu(128, 128, 2, 2)
+        self.adapt_stage3_b2_joint_varout_dimred = conv3x3(128, 128, bias=False)
+        self.mflow_conv_g3_pool = self._make_crp(128, 128, 4)
+        self.mflow_conv_g3_b = self._make_rcu(128, 128, 3, 2)
+        self.mflow_conv_g3_b3_joint_varout_dimred = conv3x3(128, 128, bias=False)
+
+        self.p_ims1d2_outl4_dimred = conv3x3(128, 128, bias=False)
+        self.adapt_stage4_b = self._make_rcu(128, 128, 2, 2)
+        self.adapt_stage4_b2_joint_varout_dimred = conv3x3(128, 128, bias=False)
+        self.mflow_conv_g4_pool = self._make_crp(128, 128, 4)
+        self.mflow_conv_g4_b = self._make_rcu(128, 128, 3, 2)
+        
+        self.clf_conv1 = nn.Conv2d(128, 64, kernel_size=5, stride=1, padding=2, bias=True)
+        self.clf_conv2 = nn.Conv2d(64, 1, kernel_size=3, stride=1, padding=2, bias=True)
+
+    def _crop_like(self, x, ref):
+        """
+        Центр-кроп x под spatial размер ref.
+        Используем, если ConvTranspose дал размер чуть больше, чем у skip-фичей.
+        """
+        _, _, h, w = x.size()
+        _, _, hr, wr = ref.size()
+    
+        if h == hr and w == wr:
+            return x
+    
+        # предполагаем h >= hr, w >= wr
+        dh = h - hr
+        dw = w - wr
+    
+        x = x[:, :, dh // 2 : h - (dh - dh // 2),
+                   dw // 2 : w - (dw - dw // 2)]
+        return x
+        
     def _make_crp(self, in_planes, out_planes, stages):
         layers = [CRPBlock(in_planes, out_planes, stages)]
         return nn.Sequential(*layers)
@@ -286,7 +309,9 @@ class RefineNet(nn.Module):
         x4 = self.mflow_conv_g1_pool(x4)
         x4 = self.mflow_conv_g1_b(x4)
         x4 = self.mflow_conv_g1_b3_joint_varout_dimred(x4)
-        x4 = nn.Upsample(size=l3.size()[2:], mode='bilinear', align_corners=True)(x4)
+        #x4 = nn.Upsample(size=l3.size()[2:], mode='bilinear', align_corners=True)(x4) # Bilinear
+        x4 = self.upCT4(x4) # ConvTranspose
+        x4 = self._crop_like(x4, l3) # ConvTranspose
 
         x3 = self.p_ims1d2_outl2_dimred(l3)
         x3 = self.adapt_stage2_b(x3)
@@ -296,7 +321,9 @@ class RefineNet(nn.Module):
         x3 = self.mflow_conv_g2_pool(x3)
         x3 = self.mflow_conv_g2_b(x3)
         x3 = self.mflow_conv_g2_b3_joint_varout_dimred(x3)
-        x3 = nn.Upsample(size=l2.size()[2:], mode='bilinear', align_corners=True)(x3)
+        #x3 = nn.Upsample(size=l2.size()[2:], mode='bilinear', align_corners=True)(x3) # Bilinear
+        x3 = self.upCT3(x3) # ConvTranspose
+        x3 = self._crop_like(x3, l2) # ConvTranspose
 
         x2 = self.p_ims1d2_outl3_dimred(l2)
         x2 = self.adapt_stage3_b(x2)
@@ -306,7 +333,9 @@ class RefineNet(nn.Module):
         x2 = self.mflow_conv_g3_pool(x2)
         x2 = self.mflow_conv_g3_b(x2)
         x2 = self.mflow_conv_g3_b3_joint_varout_dimred(x2)
-        x2 = nn.Upsample(size=l1.size()[2:], mode='bilinear', align_corners=True)(x2)
+        #x2 = nn.Upsample(size=l1.size()[2:], mode='bilinear', align_corners=True)(x2)
+        x2 = self.upCT2(x2) # ConvTranspose
+        x2 = self._crop_like(x2, l1) # ConvTranspose
 
         x1 = self.p_ims1d2_outl4_dimred(l1)
         x1 = self.adapt_stage4_b(x1)
