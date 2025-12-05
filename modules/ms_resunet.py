@@ -221,6 +221,8 @@ class RefineNet(nn.Module):
         self.mflow_conv_g1_pool = self._make_crp(256, 256, 4)
         self.mflow_conv_g1_b = self._make_rcu(256, 256, 3, 2)
         self.mflow_conv_g1_b3_joint_varout_dimred = conv3x3(256, 128, bias=False)
+        self.up_ps4 = nn.Conv2d(128, 128 * 4, kernel_size=3, stride=1, padding=1, bias=False)
+        self.ps4 = nn.PixelShuffle(2)
         
         self.p_ims1d2_outl2_dimred = conv3x3(512, 128, bias=False)
         self.adapt_stage2_b = self._make_rcu(128, 128, 2, 2)
@@ -228,6 +230,8 @@ class RefineNet(nn.Module):
         self.mflow_conv_g2_pool = self._make_crp(128, 128, 4)
         self.mflow_conv_g2_b = self._make_rcu(128, 128, 3, 2)
         self.mflow_conv_g2_b3_joint_varout_dimred = conv3x3(128, 128, bias=False)
+        self.up_ps3 = nn.Conv2d(128, 128 * 4, kernel_size=3, stride=1, padding=1, bias=False)
+        self.ps3 = nn.PixelShuffle(2)
 
         self.p_ims1d2_outl3_dimred = conv3x3(256, 128, bias=False)
         self.adapt_stage3_b = self._make_rcu(128, 128, 2, 2)
@@ -235,6 +239,8 @@ class RefineNet(nn.Module):
         self.mflow_conv_g3_pool = self._make_crp(128, 128, 4)
         self.mflow_conv_g3_b = self._make_rcu(128, 128, 3, 2)
         self.mflow_conv_g3_b3_joint_varout_dimred = conv3x3(128, 128, bias=False)
+        self.up_ps2 = nn.Conv2d(128, 128 * 4, kernel_size=3, stride=1, padding=1, bias=False)
+        self.ps2 = nn.PixelShuffle(2)
 
         self.p_ims1d2_outl4_dimred = conv3x3(128, 128, bias=False)
         self.adapt_stage4_b = self._make_rcu(128, 128, 2, 2)
@@ -309,9 +315,12 @@ class RefineNet(nn.Module):
         x4 = self.mflow_conv_g1_pool(x4)
         x4 = self.mflow_conv_g1_b(x4)
         x4 = self.mflow_conv_g1_b3_joint_varout_dimred(x4)
+        
         #x4 = nn.Upsample(size=l3.size()[2:], mode='bilinear', align_corners=True)(x4) # Bilinear
-        x4 = self.upCT4(x4) # ConvTranspose
-        x4 = self._crop_like(x4, l3) # ConvTranspose
+        #x4 = self.upCT4(x4) # ConvTranspose
+        x4 = self.up_ps4(x4)  # PixelShuffle # B × 512 × H/8 × W/8
+        x4 = self.ps4(x4)  #PixelShuffle   # B × 128 × H/4 × W/4
+        x4 = self._crop_like(x4, l3) # ConvTranspose, PixelShuffle
 
         x3 = self.p_ims1d2_outl2_dimred(l3)
         x3 = self.adapt_stage2_b(x3)
@@ -321,9 +330,12 @@ class RefineNet(nn.Module):
         x3 = self.mflow_conv_g2_pool(x3)
         x3 = self.mflow_conv_g2_b(x3)
         x3 = self.mflow_conv_g2_b3_joint_varout_dimred(x3)
+        
         #x3 = nn.Upsample(size=l2.size()[2:], mode='bilinear', align_corners=True)(x3) # Bilinear
-        x3 = self.upCT3(x3) # ConvTranspose
-        x3 = self._crop_like(x3, l2) # ConvTranspose
+        #x3 = self.upCT3(x3) # ConvTranspose
+        x3 = self.up_ps3(x3)  # PixelShuffle
+        x3 = self.ps3(x3)  # PixelShuffle
+        x3 = self._crop_like(x3, l2) # ConvTranspose, PixelShuffle
 
         x2 = self.p_ims1d2_outl3_dimred(l2)
         x2 = self.adapt_stage3_b(x2)
@@ -333,9 +345,12 @@ class RefineNet(nn.Module):
         x2 = self.mflow_conv_g3_pool(x2)
         x2 = self.mflow_conv_g3_b(x2)
         x2 = self.mflow_conv_g3_b3_joint_varout_dimred(x2)
+        
         #x2 = nn.Upsample(size=l1.size()[2:], mode='bilinear', align_corners=True)(x2)
-        x2 = self.upCT2(x2) # ConvTranspose
-        x2 = self._crop_like(x2, l1) # ConvTranspose
+        #x2 = self.upCT2(x2) # ConvTranspose
+        x2 = self.up_ps2(x2)  # PixelShuffle
+        x2 = self.ps2(x2)  # PixelShuffle
+        x2 = self._crop_like(x2, l1) # ConvTranspose, PixelShuffle
 
         x1 = self.p_ims1d2_outl4_dimred(l1)
         x1 = self.adapt_stage4_b(x1)
