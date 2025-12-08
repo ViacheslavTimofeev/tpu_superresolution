@@ -441,10 +441,16 @@ def main():
         is_batch_sched = True
 
     elif args.scheduler == "Exponential":
-        target_factor = 0.0625
-        gamma = target_factor ** (1.0 / args.epochs)
+        #target_factor = 0.0625
+        #gamma = target_factor ** (1.0 / args.epochs)
+        #sched = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=gamma)
+        drop_every = 50          # каждые 50 эпох
+        decay_factor = 0.5       # хотим уменьшать в 2 раза
+        
+        gamma = decay_factor ** (1.0 / drop_every)
         sched = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=gamma)
-        print(f"[sched] ExponentialLR: gamma={gamma:.6f}, final_lr_factor≈{target_factor}")
+
+        print(f"[sched] ExponentialLR: gamma={gamma:.6f}")
 
     elif args.scheduler == "None":
         sched = None
