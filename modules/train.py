@@ -4,6 +4,7 @@
 import os, time, math, argparse, random, re
 from pathlib import Path
 from typing import Tuple, Optional, Callable
+import matplotlib.pyplot as plt
 
 from PIL import Image
 
@@ -222,9 +223,9 @@ def main():
     ap.add_argument("--sign", type=str, choices=["deeprock_x2", "deeprock_x4", "deeprock_patches_x4", "mrccm"],
                 help="Конфигурация набора данных")
     ap.add_argument("--epochs", type=int, default=100)
-    ap.add_argument("--scheduler", type=str, choices=["OneCycle", "Exponential", "None"], default="Exponential")
+    ap.add_argument("--scheduler", type=str, choices=["OneCycle", "Exponential", "None"], default="None")
     ap.add_argument("--batch_size", type=int, default=8)
-    ap.add_argument("--loss", type=str, default="mse")
+    ap.add_argument("--loss", type=str, choices=["mse", "l1", "combo"], default="mse")
     ap.add_argument("--patch_size", type=int, default=128)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--base_channels", type=int, default=32)
@@ -243,8 +244,15 @@ def main():
     ap.add_argument("--resume", type=str, default=None,
                 help="Путь к .pt с ключом 'model' для дообучения")
     ap.add_argument("--patch_iter", action="store_true",
-                help="Патчевое обучение на DeepRock через DeepRockPatchIterable (полное покрытие патчами).",
-    )
+                help="Патчевое обучение на DeepRock через DeepRockPatchIterable (полное покрытие патчами).")
+    ap.add_argument("--finetune", action="store_true",
+                help="Использовать чекпоинт как инициализацию (fine-tune), "
+                     "не восстанавливая оптимизатор/шедулер.")
+    ap.add_argument("--freeze_regex", type=str, default=None,
+                    help="Регулярка по имени параметров для заморозки, например 'inc|down'.")
+    ap.add_argument("--ft_lr", type=float, default=None,
+                    help="Отдельный learning rate для fine-tuning (если не задан, используется --lr).")
+
 
 
     args = ap.parse_args()
@@ -415,22 +423,37 @@ def main():
     model = SRCNN().to(device)
     
     # === Загрузка чекпоинта для дообучения ===
+    ckpt = None
     if args.resume is not None:
         ckpt = torch.load(args.resume, map_location=device)
+        # модель может быть сохранена как {"model": ..., "opt": ..., ...}
         state = ckpt.get("model", ckpt)
         model.load_state_dict(state, strict=True)
-        print(f"[ckpt] loaded weights from {args.resume}")
+        print(f"[ckpt] loaded model weights from {args.resume}")
+        
+    # === заморозка слоёв при fine-tune (если нужно) ===
+    if args.finetune and args.freeze_regex is not None:
+        pattern = re.compile(args.freeze_regex)
+        for name, p in model.named_parameters():
+            if pattern.search(name):
+                p.requires_grad = False
+        print(f"[finetune] froze params matching regex: {args.freeze_regex}")
     
-    opt = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # параметры, которые вообще будут обучаться
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    # lr: отдельный для fine-tune, если задан
+    lr = args.ft_lr if (args.finetune and args.ft_lr is not None) else args.lr
+    opt = optim.AdamW(trainable_params, lr=lr, weight_decay=args.weight_decay)
+    #opt = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    # --- scheduler ---
+     # --- scheduler ---
     sched = None
     is_batch_sched = False
 
     if args.scheduler == "OneCycle":
         sched = OneCycleLR(
             optimizer=opt,
-            max_lr=args.lr,
+            max_lr=lr,
             steps_per_epoch=len(train_loader),
             epochs=args.epochs,
             pct_start=0.1,
@@ -456,12 +479,24 @@ def main():
         sched = None
     else:
         raise ValueError(f"Unknown scheduler: {args.scheduler}")
+        
+    if ckpt is not None and (not args.finetune):
+        if "opt" in ckpt:
+            opt.load_state_dict(ckpt["opt"])
+            print("[ckpt] restored optimizer state")
+        if "sched" in ckpt and sched is not None:
+            sched.load_state_dict(ckpt["sched"])
+            print("[ckpt] restored scheduler state")
 
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
 
     # --- единый цикл обучения для всех sign ---
     best = math.inf
     t_start = time.time()
+
+        # списки для логирования лоссов по эпохам
+    history_train_loss = []
+    history_val_loss = []
 
     for epoch in range(1, args.epochs + 1):
         t_ep_start = time.time()
@@ -477,7 +512,10 @@ def main():
         t_val_start = time.time()
         val_loss, val_psnr, val_ssim = validate(model, valid_loader, device, loss_fn)
         t_val = time.time() - t_val_start
-    
+        
+        history_train_loss.append(tr_loss)
+        history_val_loss.append(val_loss)
+
         t_ep = time.time() - t_ep_start
     
         print(
@@ -487,7 +525,6 @@ def main():
             f"(data {d_t:.3f}/batch {b_t:.3f}) | "
             f"time: train {t_tr:.1f}s, val {t_val:.1f}s, total {t_ep:.1f}s"
         )
-
 
         # шаг по lr-схеме раз в эпоху (для Exponential)
         if (not is_batch_sched) and (sched is not None):
@@ -501,7 +538,31 @@ def main():
 
         if val_loss < best:
             best = val_loss
-            torch.save({"model": model.state_dict()}, f"best_{args.sign}.pt")
+            torch.save({
+                "model": model.state_dict(),
+                "opt": opt.state_dict(),
+                "sched": sched.state_dict() if sched is not None else None,
+                "epoch": epoch,
+                "args": vars(args),
+            }, f"best_{args.sign}.pt")
+
+        # --- сохранение графика лоссов ---
+    epochs = list(range(1, len(history_train_loss) + 1))
+    fig_path = f"loss_curve_{args.sign}.png"
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, history_train_loss, label="train loss")
+    plt.plot(epochs, history_val_loss, label="val loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title(f"Train vs Val loss ({args.sign})")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(fig_path, dpi=150)
+    plt.close()
+
+    print(f"[plot] saved loss curves to {fig_path}")
 
     print(f"[{args.sign}][time] total={fmt(time.time() - t_start)}")
     print(f"[ALL][time] total train time={fmt(time.time() - t_all_start)}")

@@ -26,10 +26,12 @@ def _get_dirs_deeprock(root: str, split: str, scale: str) -> Tuple[Path, Path]:
     hr_dir = Path("C:/Users/Вячеслав/Documents/superresolution/DeepRockSR-2D_patches") / f"HR_{split}"
     lr_dir = Path("C:/Users/Вячеслав/Documents/superresolution/DeepRockSR-2D_patches") / f"LR_{split}"
     """
-    
+    hr_dir = Path("C:/Users/Вячеслав/Documents/superresolution/beton_dataset") / f"beton_{split}_HR"
+    lr_dir = Path("C:/Users/Вячеслав/Documents/superresolution/beton_dataset") / f"beton_{split}_LR_default_{scale}"
+    """
     hr_dir = root / "shuffled2D" / f"shuffled2D_{split}_HR"
     lr_dir = root / "shuffled2D" / f"shuffled2D_{split}_LR_default_{scale}"
-    
+    """
     """
     hr_dir = root / "carbonate2D" / f"carbonate2D_{split}_HR_micro"
     lr_dir = root / "carbonate2D" / f"carbonate2D_{split}_LR_default_{scale}_micro"

@@ -1,15 +1,3 @@
-"""Minimal, production‑ready U‑Net (2D) starter in PyTorch.
-
-Supports:
-- Segmentation (logits per class)
-- Image‑to‑image regression (e.g., denoising / simple SR head) via `out_channels=1` (or 3) and `loss=MSE/L1`
-- Bilinear upsampling or transposed conv
-- Optional BatchNorm, Dropout, and weight init
-
-Usage examples are at the bottom (shape sanity check and parameter count).
-
-Author: ChatGPT (starter template)
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass

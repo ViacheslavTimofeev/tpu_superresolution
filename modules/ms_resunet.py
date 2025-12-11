@@ -22,7 +22,7 @@ def conv1x1(in_planes, out_planes, stride=1, bias=False):
 class CRPBlock(nn.Module):
 
     def __init__(self, in_planes, out_planes, n_stages):
-        super(CRPBlock, self).__init__()
+        super().__init__()
         for i in range(n_stages):
             setattr(self, '{}_{}'.format(i + 1, 'outvar_dimred'),
                     conv3x3(in_planes if (i == 0) else out_planes,
@@ -46,7 +46,7 @@ stages_suffixes = {0 : '_conv',
 class RCUBlock(nn.Module):
     
     def __init__(self, in_planes, out_planes, n_blocks, n_stages):
-        super(RCUBlock, self).__init__()
+        super().__init__()
         for i in range(n_blocks):
             for j in range(n_stages):
                 setattr(self, '{}{}'.format(i + 1, stages_suffixes[j]),
@@ -71,7 +71,7 @@ class BasicBlock(nn.Module):
     expansion = 1
 
     def __init__(self, inplanes, planes, stride=1, downsample=None):
-        super(BasicBlock, self).__init__()
+        super().__init__()
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = nn.BatchNorm2d(planes)
         self.relu = nn.ReLU(inplace=True)
@@ -103,7 +103,7 @@ class Bottleneck(nn.Module):        #--->(Bottleneck(16, 16, stride=1, downsampl
     expansion = 4
 
     def __init__(self, inplanes, planes, stride=1, downsample=None):
-        super(Bottleneck, self).__init__()
+        super().__init__()
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
@@ -139,9 +139,8 @@ class Bottleneck(nn.Module):        #--->(Bottleneck(16, 16, stride=1, downsampl
 
 
 class RefineNet(nn.Module):
-
     def __init__(self, block, layers):     #---->(Bottleneck, [3, 4, 23, 3])
-        super(RefineNet, self).__init__()
+        super().__init__()
         """
         self.inplanes = 16
         #self.do = nn.Dropout(p=0.5)
