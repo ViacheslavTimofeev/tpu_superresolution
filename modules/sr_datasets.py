@@ -26,12 +26,14 @@ def _get_dirs_deeprock(root: str, split: str, scale: str) -> Tuple[Path, Path]:
     hr_dir = Path("C:/Users/Вячеслав/Documents/superresolution/DeepRockSR-2D_patches") / f"HR_{split}"
     lr_dir = Path("C:/Users/Вячеслав/Documents/superresolution/DeepRockSR-2D_patches") / f"LR_{split}"
     """
+    """
     hr_dir = Path("C:/Users/Вячеслав/Documents/superresolution/beton_dataset") / f"beton_{split}_HR"
     lr_dir = Path("C:/Users/Вячеслав/Documents/superresolution/beton_dataset") / f"beton_{split}_LR_default_{scale}"
     """
+    
     hr_dir = root / "shuffled2D" / f"shuffled2D_{split}_HR"
     lr_dir = root / "shuffled2D" / f"shuffled2D_{split}_LR_default_{scale}"
-    """
+    
     """
     hr_dir = root / "carbonate2D" / f"carbonate2D_{split}_HR_micro"
     lr_dir = root / "carbonate2D" / f"carbonate2D_{split}_LR_default_{scale}_micro"
@@ -58,7 +60,6 @@ def _get_dirs_deeprock_patches(root: str, split: str, scale: str | None = None) 
           LR_valid/
 
     split ∈ {"train", "valid"}.
-    scale сейчас не используется, оставлен для интерфейсной совместимости.
     """
     root = Path(root)
 
@@ -77,7 +78,6 @@ def _get_dirs_deeprock_patches(root: str, split: str, scale: str | None = None) 
         raise FileNotFoundError(f"Нет папки с LR-патчами: {lr_dir}")
 
     return hr_dir, lr_dir
-
 
 def _strip_patch_suffix(stem: str) -> str:
     """
@@ -105,7 +105,6 @@ def compute_patch_grid(h: int, w: int, patch_size: int):
             left = j * patch_size
             grid.append((top, left))
     return grid
-
 
 def pad_to_multiple(img: torch.Tensor, patch_size: int, mode: str = "reflect"):
     # img: [C, H, W]

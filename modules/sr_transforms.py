@@ -145,36 +145,6 @@ class PairMinMaxScale:
         hr = hr.clamp(0.0, 1.0)
         return lr, hr
 
-class PairGaussianBlur:
-    """
-    Согласованный GaussianBlur на тензорах [0,1].
-    """
-    def __init__(self, kernel_size: int, sigma=(0.1, 2.0), p: float = 0.5):
-        if kernel_size % 2 == 0:
-            raise ValueError("kernel_size должен быть нечётным")
-        self.kernel = (kernel_size, kernel_size)
-        self.sigma = sigma
-        self.p = float(p)
-
-    def __call__(self, lr, hr):
-        if torch.rand(()) >= self.p:
-            return lr, hr
-        if isinstance(self.sigma, (tuple, list)):
-            s_low, s_high = self.sigma
-            sigma = float(torch.empty(1).uniform_(s_low, s_high))
-        else:
-            sigma = float(self.sigma)
-        lr = TF.gaussian_blur(lr, kernel_size=self.kernel, sigma=sigma)
-        hr = TF.gaussian_blur(hr, kernel_size=self.kernel, sigma=sigma)
-        return lr, hr
-
-class PairNormalize:
-    """Одинаковый Normalize к обоим тензорам (каналы те же)."""
-    def __init__(self, mean, std):
-        self.norm = T.Normalize(mean=mean, std=std)
-    def __call__(self, lr, hr):
-        return self.norm(lr), self.norm(hr)
-
 # ---------- Сборщики пайплайнов ----------
 
 def build_pair_transform(
@@ -204,10 +174,6 @@ def build_pair_transform(
     stages.append(PairToTensor01())
     if dataset == "mrccm":
         stages.append(PairMinMaxScale(vmin, vmax))
-    if do_blur:
-        stages.append(PairGaussianBlur(kernel_size=blur_kernel, sigma=blur_sigma, p=0.5))
-    if normalize:
-        stages.append(PairNormalize(mean=mean, std=std))
         
     return PairCompose(stages)
     
@@ -227,7 +193,5 @@ def build_pair_transform_eval(
     stages.append(PairToTensor01())
     if dataset == "mrccm":
         stages.append(PairMinMaxScale(vmin, vmax))
-    if normalize:
-        stages.append(PairNormalize(mean, std))
 
     return PairCompose(stages)

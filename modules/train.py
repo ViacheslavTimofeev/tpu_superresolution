@@ -20,7 +20,7 @@ from torchvision.transforms.v2 import functional as TF
 import torch.nn.functional as F
 
 from unet2d import UNet2D, UNetConfig
-from ms_resunet import SRCNN
+from ms_resunet import MS_ResUNet
 
 import copy
 from datetime import timedelta
@@ -420,7 +420,7 @@ def main():
         up_mode="pixelshuffle",
     )
     #model = UNet2D(cfg).to(device)
-    model = SRCNN().to(device)
+    model = MS_ResUNet().to(device)
     
     # === Загрузка чекпоинта для дообучения ===
     ckpt = None

@@ -15,7 +15,7 @@ from torchvision.transforms import v2 as T
 from torchvision.transforms.v2 import functional as F
 
 from unet2d import UNet2D, UNetConfig
-from ms_resunet import SRCNN
+from ms_resunet import MS_ResUNet
 
 from sr_transforms import build_pair_transform_eval
 from sr_datasets import Shuffled2DPaired, MRCCMPairedByZ
@@ -71,6 +71,14 @@ def main():
     ap.add_argument("--save_dir", type=str, default="preds")  # куда сохранить примеры
     ap.add_argument("--save_n", type=int, default=16)         # сколько картинок сохранить
     ap.add_argument("--z_stride", type=int, default=1)
+    ap.add_argument("--save_every", type=int, default=0,
+                help="Сохранять каждый N-й sample по индексу датасета (0 = выключено)")
+    ap.add_argument("--save_start", type=int, default=0,
+                help="С какого индекса начинать периодическое сохранение (для save_every)")
+    ap.add_argument("--save_indices", type=str, default="",
+                help="Явный список индексов через запятую, например: '0,100,200,500'. "
+                    "Если задан — имеет приоритет над save_every")
+
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -166,7 +174,7 @@ def main():
     )
     
     #model = UNet2D(cfg).to(device)
-    model = SRCNN().to(device)
+    model = MS_ResUNet().to(device)
     
     # --- загрузка чекпойнта (.pt) ---
     ckpt = torch.load(args.ckpt, map_location="cpu")
@@ -184,6 +192,17 @@ def main():
     out_dir = Path(args.save_dir); out_dir.mkdir(parents=True, exist_ok=True)
     saved = 0
 
+    save_set = None
+    if args.save_indices.strip():
+        save_set = {int(x) for x in re.split(r"[,\s]+", args.save_indices.strip()) if x != ""}
+        print(f"[save] explicit indices: {sorted(save_set)[:20]}{'...' if len(save_set) > 20 else ''}")
+    elif args.save_every and args.save_every > 0:
+        print(f"[save] every {args.save_every} samples начиная с {args.save_start}")
+    else:
+        print(f"[save] first {args.save_n} samples (default mode)")
+        
+    global_idx = 0
+    
     with torch.no_grad():
         for (lr, hr) in test_loader:
             lr = lr.to(device, non_blocking=True)
@@ -215,23 +234,38 @@ def main():
             # ❸ SSIM — только с отключенным autocast
             with torch.amp.autocast(device_type="cuda", enabled=False):
                 ssim_vals.append(ssim(pred_f, hr_f, data_range=1.0, size_average=True))
-    
-            # сохранить несколько примеров
-            if saved < args.save_n:
-                for b in range(min(pred.size(0), args.save_n - saved)):
-                    stem = f"sample_{saved}"
-                    
-                    # для MRCCM хотим "как TIFF" → включаем per_image_rescale
-                    per_rescale = (dataset_kind == "mrccm")
+                
+            B = pred.size(0)
 
-                    save_tensor_as_png(lr[b],   out_dir / f"{stem}_lr.png",   per_image_rescale=per_rescale)
-                    save_tensor_as_png(pred[b], out_dir / f"{stem}_pred.png", per_image_rescale=per_rescale)
-                    save_tensor_as_png(hr[b],   out_dir / f"{stem}_hr.png",   per_image_rescale=per_rescale)
-                    
-                    saved += 1
-                    
-                    if saved >= args.save_n:
-                        break
+            for b in range(B):
+                sample_idx = global_idx + b
+            
+                # решаем, сохранять ли этот индекс
+                if save_set is not None:
+                    should_save = (sample_idx in save_set)
+                elif args.save_every and args.save_every > 0:
+                    should_save = (sample_idx >= args.save_start) and ((sample_idx - args.save_start) % args.save_every == 0)
+                else:
+                    should_save = (saved < args.save_n)
+            
+                if not should_save:
+                    continue
+                if saved >= args.save_n:
+                    # даже в режиме every/indices ограничиваем общим save_n (если хочешь “без лимита” — поставь save_n очень большим)
+                    continue
+            
+                # имя по ИНДЕКСУ датасета → удобно матчить между моделями
+                stem = f"idx_{sample_idx:06d}"
+            
+                per_rescale = (dataset_kind == "mrccm")
+            
+                save_tensor_as_png(lr[b],   out_dir / f"{stem}_lr.png", per_image_rescale=per_rescale)
+                save_tensor_as_png(hr[b],   out_dir / f"{stem}_hr.png", per_image_rescale=per_rescale)
+                save_tensor_as_png(pred[b], out_dir / f"{stem}_sr.png", per_image_rescale=per_rescale)
+            
+                saved += 1
+            
+            global_idx += B
 
     dt = time.time() - t0
     mean_psnr = sum(psnr_vals) / max(1, len(psnr_vals))
