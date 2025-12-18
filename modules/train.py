@@ -231,7 +231,6 @@ def main():
     ap.add_argument("--base_channels", type=int, default=32)
     ap.add_argument("--weight_decay", type=float, default=0)
     ap.add_argument("--do_flips", type=bool, default=False)
-    ap.add_argument("--do_blur", type=bool, default=False)
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--no_pin", action="store_true")
@@ -304,7 +303,6 @@ def main():
     pair_tf_train = build_pair_transform(
         patch_size=patch_size_train,
         do_flips=args.do_flips,
-        do_blur=args.do_blur,
         dataset=dataset_kind,
         vmin=V_MIN,
         vmax=V_MAX,
@@ -313,7 +311,6 @@ def main():
 
     pair_tf_valid = build_pair_transform(
         do_flips=False,
-        do_blur=False,
         dataset=dataset_kind,
         vmin=V_MIN,
         vmax=V_MAX,

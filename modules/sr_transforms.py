@@ -149,9 +149,6 @@ class PairMinMaxScale:
 
 def build_pair_transform(
     do_flips: bool = True,
-    do_blur: bool = True,
-    blur_kernel: int = 3,
-    blur_sigma: Tuple[float, float] = (0.1, 1.5),
     mean: Tuple[float, ...] = (0.45161797,),
     std: Tuple[float, ...]  = (0.20893379,),
     normalize: bool = False,

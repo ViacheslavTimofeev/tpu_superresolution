@@ -9,7 +9,7 @@ def conv3x3(in_planes, out_planes, stride=1, bias=False):
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                      padding=1, bias=bias)
 
-class CRPBlock(nn.Module):
+class RCPB(nn.Module):
     def __init__(self, in_planes, out_planes, n_stages):
         super().__init__()
         for i in range(n_stages):
@@ -168,7 +168,7 @@ class RefineNet(nn.Module):
         return x
         
     def _make_crp(self, in_planes, out_planes, stages):
-        layers = [CRPBlock(in_planes, out_planes, stages)]
+        layers = [RCPB(in_planes, out_planes, stages)]
         return nn.Sequential(*layers)
 
     def _make_rcu(self, in_planes, out_planes, blocks, stages):
