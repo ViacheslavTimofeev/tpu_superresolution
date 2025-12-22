@@ -62,35 +62,6 @@ def batch_psnr(pred: torch.Tensor, target: torch.Tensor, max_val: float = 1.0) -
     psnr = 20.0 * torch.log10(max_val / torch.sqrt(mse + 1e-8))
     return psnr
 
-class ComboLoss(nn.Module):
-    def __init__(self, w_l1=1.0, w_ssim=0.05):
-        super().__init__()
-        self.w_l1 = float(w_l1)
-        self.w_ssim = float(w_ssim)
-
-    def forward(self, pred, target):
-        # Оба уже в [0,1] (Normalize отключен) — считаем L1 прямо так
-        l1 = F.l1_loss(pred, target)
-
-        loss = self.w_l1 * l1
-
-        # Считаем SSIM только если он реально нужен
-        if self.w_ssim > 0:
-            # SSIM иногда "плывёт", если выход чуть вылез за [0,1].
-            # КЛИПИМ ТОЛЬКО КОПИИ для SSIM, L1 не трогаем:
-            #pred01 = pred.detach()  # чтобы не тащить лишний grad через clamp
-            #targ01 = target.detach()
-            pred01 = pred.clamp(0, 1)
-            targ01 = target.clamp(0, 1)
-            with torch.amp.autocast("cuda", enabled=False):
-                ssim_val = ssim_ms(pred01.float(), targ01.float(), data_range=1.0)
-            # защитимся от редких NaN:
-            if torch.isnan(ssim_val) or torch.isinf(ssim_val):
-                ssim_val = torch.tensor(0.0, device=pred.device, dtype=torch.float32)
-            loss = loss + self.w_ssim * (1.0 - ssim_val)
-
-        return loss
-
 # ====== 5) DataLoader ======
 def make_loader(ds, batch_size, workers, pin=True, shuffle=False, drop_last=False, persistent=False):
     is_iterable = isinstance(ds, IterableDataset)
@@ -110,7 +81,6 @@ def make_loader(ds, batch_size, workers, pin=True, shuffle=False, drop_last=Fals
         kwargs["prefetch_factor"] = 2
 
     return DataLoader(**kwargs)
-
 
 # ====== 6) Профилирование загрузки ======
 @torch.no_grad()
@@ -225,7 +195,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--scheduler", type=str, choices=["OneCycle", "Exponential", "None"], default="None")
     ap.add_argument("--batch_size", type=int, default=8)
-    ap.add_argument("--loss", type=str, choices=["mse", "l1", "combo"], default="mse")
+    ap.add_argument("--loss", type=str, choices=["mse", "l1"], default="mse")
     ap.add_argument("--patch_size", type=int, default=128)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--base_channels", type=int, default=32)
@@ -252,8 +222,6 @@ def main():
     ap.add_argument("--ft_lr", type=float, default=None,
                     help="Отдельный learning rate для fine-tuning (если не задан, используется --lr).")
 
-
-
     args = ap.parse_args()
 
     # --- seed + device ---
@@ -273,8 +241,6 @@ def main():
         loss_fn = mse_loss
     elif args.loss == "l1":
         loss_fn = L1_loss
-    elif args.loss == "combo":
-        loss_fn = ComboLoss(w_l1=1, w_ssim=0.1)
     else:
         raise ValueError(f"Unknown loss: {args.loss}")
 
