@@ -14,17 +14,10 @@ from torchvision.transforms import InterpolationMode
 from torchvision.transforms import v2 as T
 from torchvision.transforms.v2 import functional as F
 
-from unet2d import UNet2D, UNetConfig
 from ms_resunet import MS_ResUNet
 
 from sr_transforms import build_pair_transform_eval
-from sr_datasets import Shuffled2DPaired, MRCCMPairedByZ
-
-V_MIN = 8557.25
-V_MAX = 47033.0
-
-V_MIN_05 = 11072.5
-V_MAX_995 = 18645.0
+from sr_datasets import Shuffled2DPaired
 
 # ============ метрики и utils ============
 
@@ -57,12 +50,10 @@ def save_tensor_as_png(x: torch.Tensor, path: Path, per_image_rescale: bool = Fa
     pil = T.ToPILImage()(x)
     pil.save(str(path))
 
-
 # ============ основной eval ============
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sign", type=str, choices=["deeprock_x2", "deeprock_x4", "mrccm"],
+    ap.add_argument("--scale", type=str, choices=["X2", "X4"], required=True,
                 help="Конфигурация набора данных")
     ap.add_argument("--data_root", type=str, default="C:/Users/Вячеслав/Documents/superresolution/DeepRockSR-2D")
     ap.add_argument("--batch_size", type=int, default=4)
@@ -70,7 +61,6 @@ def main():
     ap.add_argument("--ckpt", type=str, required=True)        # путь к .pt
     ap.add_argument("--save_dir", type=str, default="preds")  # куда сохранить примеры
     ap.add_argument("--save_n", type=int, default=16)         # сколько картинок сохранить
-    ap.add_argument("--z_stride", type=int, default=1)
     ap.add_argument("--save_every", type=int, default=0,
                 help="Сохранять каждый N-й sample по индексу датасета (0 = выключено)")
     ap.add_argument("--save_start", type=int, default=0,
@@ -84,39 +74,16 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("[device]", device, torch.cuda.get_device_name(0) if device.type == "cuda" else "-")
     
-    if args.sign in ("deeprock_x2", "deeprock_x4"):
-        dataset_kind = "DeepRock"
-        scale = "X2" if args.sign == "deeprock_x2" else "X4"
-    elif args.sign == "mrccm":
-        dataset_kind = "mrccm"
-        scale = None
-    else:
-        raise ValueError(f"Unknown sign: {args.sign}")
-
-    tf_test = build_pair_transform_eval(
-        normalize=False,
-        dataset=dataset_kind,
-        vmin=V_MIN,
-        vmax=V_MAX,
+    # --- Transforms ---
+    tf_test = build_pair_transform_eval()
+    
+    # --- Dataset ---
+    test_ds = Shuffled2DPaired(
+        args.data_root,
+        split="test",
+        scale=args.scale,
+        transform_pair=tf_test
     )
-
-    if dataset_kind == "DeepRock":
-        test_ds = Shuffled2DPaired(
-            args.data_root,
-            split="test",
-            scale=scale,
-            transform_pair=tf_test,
-    )
-    elif dataset_kind == "mrccm":
-        test_ds = MRCCMPairedByZ(
-            Path(args.data_root) / "LR_test",
-            Path(args.data_root) / "HR_test",
-            transform_pair=tf_test,
-            stride=args.z_stride,
-        )
-    else:
-        raise ValueError(f"Unknown dataset_kind: {dataset_kind}")
-
 
     test_loader = DataLoader(
         test_ds, batch_size=args.batch_size, shuffle=False,
@@ -126,7 +93,6 @@ def main():
     )
     print(f"[data] test samples: {len(test_ds)} | steps: {len(test_loader)}")
 
-    
     @torch.no_grad()
     def _peek_batch(loader):
         try:
@@ -158,7 +124,8 @@ def main():
     
             # pytorch_msssim иногда дергает autocast, поэтому лучше явно выключить
             with torch.amp.autocast(device_type="cuda", enabled=False):
-                ssims.append(ssim(lr, hr, data_range=1.0, size_average=True))
+                ss = ssim(lr, hr, data_range=1.0, size_average=True)
+                ssims.append(float(ss.item()))
     
         return sum(psnrs) / len(psnrs), sum(ssims) / len(ssims)
 
@@ -166,14 +133,6 @@ def main():
     bic_psnr, bic_ssim = eval_bicubic_baseline(test_loader, device)
     print(f"[baseline] Bicubic PSNR: {bic_psnr:.2f} dB | SSIM: {bic_ssim:.4f}")
     
-    cfg = UNetConfig(
-        in_channels=1, out_channels=1,
-        base_channels=64, depth=4,
-        norm_enc=False, norm_dec=False,
-        up_mode="pixelshuffle", dropout=0.0
-    )
-    
-    #model = UNet2D(cfg).to(device)
     model = MS_ResUNet().to(device)
     
     # --- загрузка чекпойнта (.pt) ---
@@ -224,14 +183,14 @@ def main():
                     pred, size=hr.shape[-2:], mode="bilinear", align_corners=False
                 )
     
-            # ❶ для метрик всегда используем float32
+            # для метрик всегда используем float32
             pred_f = pred.to(dtype=torch.float32)
             hr_f   = hr.to(dtype=torch.float32)
     
-            # ❷ psnr можно спокойно считать в float32
+            # psnr можно спокойно считать в float32
             psnr_vals.append(psnr(pred_f, hr_f, max_val=1.0))
     
-            # ❸ SSIM — только с отключенным autocast
+            # SSIM — только с отключенным autocast
             with torch.amp.autocast(device_type="cuda", enabled=False):
                 ssim_vals.append(ssim(pred_f, hr_f, data_range=1.0, size_average=True))
                 
@@ -257,7 +216,7 @@ def main():
                 # имя по ИНДЕКСУ датасета → удобно матчить между моделями
                 stem = f"idx_{sample_idx:06d}"
             
-                per_rescale = (dataset_kind == "mrccm")
+                per_rescale = False
             
                 save_tensor_as_png(lr[b],   out_dir / f"{stem}_lr.png", per_image_rescale=per_rescale)
                 save_tensor_as_png(hr[b],   out_dir / f"{stem}_hr.png", per_image_rescale=per_rescale)

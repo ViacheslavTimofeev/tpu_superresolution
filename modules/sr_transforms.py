@@ -131,36 +131,15 @@ class PairToTensor01:
         lr = self.to_f32(self.to_img(lr))
         hr = self.to_f32(self.to_img(hr))
         return lr, hr
-        
-class PairMinMaxScale:
-    def __init__(self, vmin: float, vmax: float):
-        self.vmin = float(vmin)
-        self.vmax = float(vmax)
-        self.eps  = 1e-6
-
-    def __call__(self, lr, hr):
-        lr = (lr - self.vmin) / (self.vmax - self.vmin + self.eps)
-        hr = (hr - self.vmin) / (self.vmax - self.vmin + self.eps)
-        lr = lr.clamp(0.0, 1.0)
-        hr = hr.clamp(0.0, 1.0)
-        return lr, hr
-
 # ---------- Сборщики пайплайнов ----------
 
 def build_pair_transform(
     do_flips: bool = True,
-    mean: Tuple[float, ...] = (0.45161797,),
-    std: Tuple[float, ...]  = (0.20893379,),
-    normalize: bool = False,
-    dataset: str = "DeepRock",
-    patch_size: Optional[int] = None,
-    vmin: float | None = None,
-    vmax: float | None = None
+    patch_size: Optional[int] = None
 ) -> PairCompose:
 
     stages = []
 
-    # все, что под docstrings, то для нашего эксперимента
     stages.append(PairGrayscale())  
     stages.append(PairUpscaleLRtoHR())
 
@@ -169,26 +148,15 @@ def build_pair_transform(
     if do_flips:
         stages.append(PairFlips())
     stages.append(PairToTensor01())
-    if dataset == "mrccm":
-        stages.append(PairMinMaxScale(vmin, vmax))
         
     return PairCompose(stages)
     
-def build_pair_transform_eval(
-    mean: Tuple[float, ...] = (0.45161797,),
-    std: Tuple[float, ...]  = (0.20893379,),
-    normalize: bool = False,
-    dataset: str = "DeepRock",
-    vmin: float | None = None,
-    vmax: float | None = None
-) -> PairCompose:
+def build_pair_transform_eval() -> PairCompose:
 
     stages = []
 
     stages.append(PairGrayscale())
     stages.append(PairUpscaleLRtoHR())
     stages.append(PairToTensor01())
-    if dataset == "mrccm":
-        stages.append(PairMinMaxScale(vmin, vmax))
 
     return PairCompose(stages)

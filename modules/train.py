@@ -19,20 +19,13 @@ from torchvision.transforms import v2 as T
 from torchvision.transforms.v2 import functional as TF
 import torch.nn.functional as F
 
-from unet2d import UNet2D, UNetConfig
 from ms_resunet import MS_ResUNet
 
 import copy
 from datetime import timedelta
 
 from sr_transforms import build_pair_transform
-from sr_datasets import Shuffled2DPaired, MRCCMPairedByZ, DeepRockPatchIterable, DeepRockPrecomputedPatches, DeepRockDiskPatchPairs
-
-V_MIN = 8557.25
-V_MAX = 47033.0
-
-V_MIN_05 = 11072.5
-V_MAX_995 = 18645.0
+from sr_datasets import Shuffled2DPaired
 
 def fmt(seconds: float) -> str:
     return str(timedelta(seconds=int(seconds)))
@@ -62,7 +55,7 @@ def batch_psnr(pred: torch.Tensor, target: torch.Tensor, max_val: float = 1.0) -
     psnr = 20.0 * torch.log10(max_val / torch.sqrt(mse + 1e-8))
     return psnr
 
-# ====== 5) DataLoader ======
+# ====== DataLoader ======
 def make_loader(ds, batch_size, workers, pin=True, shuffle=False, drop_last=False, persistent=False):
     is_iterable = isinstance(ds, IterableDataset)
 
@@ -82,7 +75,7 @@ def make_loader(ds, batch_size, workers, pin=True, shuffle=False, drop_last=Fals
 
     return DataLoader(**kwargs)
 
-# ====== 6) Профилирование загрузки ======
+# ====== Профилирование загрузки ======
 @torch.no_grad()
 def warmup_profile(dl, n_batches=3):
     t0 = time.time()
@@ -92,7 +85,7 @@ def warmup_profile(dl, n_batches=3):
         if i + 1 >= n_batches: break
     print(f"[profile] {n_batches} batches load: {time.time()-t0:.2f}s")
 
-# ====== 7) Тренировка/валидация ======
+# ====== Тренировка/валидация ======
 def train_one_epoch(model, loader, optimizer, scaler, device, epoch, loss_fn, sched, is_batch_sched):
     model.train()
     data_t = 0.0
@@ -186,34 +179,27 @@ def validate(model, loader, device, loss_fn):
     return mean_loss, mean_psnr, mean_ssim
 
 
-# ====== 8) Основной запуск ======
+# ====== Основной запуск ======
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_root", type=str, required=True)
-    ap.add_argument("--sign", type=str, choices=["deeprock_x2", "deeprock_x4", "deeprock_patches_x4", "mrccm"],
-                help="Конфигурация набора данных")
-    ap.add_argument("--epochs", type=int, default=100)
+    ap.add_argument("--scale", type=str, choices=["X2", "X4"], required=True,
+                help="Масштаб для обучения")
+    ap.add_argument("--epochs", type=int, default=5)
     ap.add_argument("--scheduler", type=str, choices=["OneCycle", "Exponential", "None"], default="None")
     ap.add_argument("--batch_size", type=int, default=8)
     ap.add_argument("--loss", type=str, choices=["mse", "l1"], default="mse")
-    ap.add_argument("--patch_size", type=int, default=128)
-    ap.add_argument("--lr", type=float, default=5e-4)
-    ap.add_argument("--base_channels", type=int, default=32)
+    ap.add_argument("--patch_size", type=int, default=100)
+    ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight_decay", type=float, default=0)
-    ap.add_argument("--do_flips", type=bool, default=False)
+    ap.add_argument("--no_flips", action="store_true")
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--no_pin", action="store_true")
     ap.add_argument("--no_persistent", action="store_true")
-    ap.add_argument("--time_log_every", type=int, default=20)
-    ap.add_argument("--z_start", type=int, default=None)
-    ap.add_argument("--z_end", type=int, default=None)
-    ap.add_argument("--z_stride", type=int, default=1)
-    ap.add_argument("--precomputed_patches", type=str, default=None)
+    ap.add_argument("--time_log_every", type=int, default=10)
     ap.add_argument("--resume", type=str, default=None,
                 help="Путь к .pt с ключом 'model' для дообучения")
-    ap.add_argument("--patch_iter", action="store_true",
-                help="Патчевое обучение на DeepRock через DeepRockPatchIterable (полное покрытие патчами).")
     ap.add_argument("--finetune", action="store_true",
                 help="Использовать чекпоинт как инициализацию (fine-tune), "
                      "не восстанавливая оптимизатор/шедулер.")
@@ -224,7 +210,7 @@ def main():
 
     args = ap.parse_args()
 
-    # --- seed + device ---
+    # --- Rand, workers, device ---
     seed_everything(args.seed)
     t_all_start = time.time()
 
@@ -236,127 +222,42 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("[device]", device, torch.cuda.get_device_name(0) if device.type == "cuda" else "-")
 
-    # --- выбор лосса ---
+    # --- Loss ---
     if args.loss == "mse":
         loss_fn = mse_loss
     elif args.loss == "l1":
         loss_fn = L1_loss
     else:
         raise ValueError(f"Unknown loss: {args.loss}")
-
-    # --- декодируем sign -> (dataset_kind, scale) ---
-    if args.sign in ("deeprock_x2", "deeprock_x4", "deeprock_patches_x4"):
-        dataset_kind = "DeepRock"
-        if args.sign == "deeprock_x2":
-            scale = "X2"
-        else:
-            scale = "X4"  # и для обычного x4, и для патчевого x4
-    elif args.sign == "mrccm":
-        dataset_kind = "mrccm"
-        scale = None
-    else:
-        raise ValueError(f"Unknown sign: {args.sign}")
         
-    # для патчевого режима не делаем RandomCrop в трансформах
-    # --- трансформы зависят от dataset_kind и патчевого режима ---
-
-    # для дисковых патчей и iterable-патчей RandomCrop в трансформах не нужен
-    if args.sign == "deeprock_patches_x4" or (dataset_kind == "DeepRock" and args.patch_iter):
-        patch_size_train = None
-    else:
-        patch_size_train = 96  # можешь заменить на args.patch_size, если хочешь управлять из CLI
-
+    # --- Transforms ---
+    do_flips = not args.no_flips
     pair_tf_train = build_pair_transform(
-        patch_size=patch_size_train,
-        do_flips=args.do_flips,
-        dataset=dataset_kind,
-        vmin=V_MIN,
-        vmax=V_MAX,
-        normalize=False,
+        patch_size=args.patch_size,
+        do_flips=do_flips
     )
 
     pair_tf_valid = build_pair_transform(
-        do_flips=False,
-        dataset=dataset_kind,
-        vmin=V_MIN,
-        vmax=V_MAX,
-        normalize=False,
+        do_flips=False
+    )
+    
+    # --- Dataset ---
+    train_ds = Shuffled2DPaired(
+        args.data_root,
+        split="train",
+        scale=args.scale,
+        transform_pair=pair_tf_train,
+    )
+    
+    # Валидация по full image, вне зависимости от 
+    valid_ds = Shuffled2DPaired(
+        args.data_root,
+        split="valid",
+        scale=args.scale,
+        transform_pair=pair_tf_valid,
     )
 
-
-    if dataset_kind == "DeepRock":
-        if args.sign == "deeprock_patches_x4":
-            # Патчевое обучение с готовых патчей на диске
-            train_ds = DeepRockDiskPatchPairs(
-                root=args.data_root,
-                split="train",
-                scale=scale,
-                transform_pair=pair_tf_train,
-            )
-            valid_ds = DeepRockDiskPatchPairs(
-                root=args.data_root,
-                split="valid",
-                scale=scale,
-                transform_pair=pair_tf_valid,
-            )
-        else:
-            # Обычный DeepRock: либо precomputed .pt, либо Iterable-патчи, либо full-size Shuffled
-            if args.precomputed_patches is not None:
-                train_ds = DeepRockPrecomputedPatches(args.precomputed_patches)
-
-            elif args.patch_iter:
-                # DeepRockPatchIterable 
-                train_ds = DeepRockPatchIterable(
-                    root=args.data_root,
-                    split="train",
-                    scale=scale,
-                    patch_size=args.patch_size,    # 100 для патчей 100x100
-                    transform_pair=pair_tf_train,  # без RandomCrop
-                    pad_mode="reflect",
-                    shuffle_images=True,
-                    shuffle_patches=False,          # можешь включить True, если хочешь
-                )
-
-            else:
-                # классический случай: одна картинка = один sample
-                train_ds = Shuffled2DPaired(
-                    args.data_root,
-                    split="train",
-                    scale=scale,
-                    transform_pair=pair_tf_train,
-                )
-
-            # Валидация — по крупным изображениям, как и раньше
-            valid_ds = Shuffled2DPaired(
-                args.data_root,
-                split="valid",
-                scale=scale,
-                transform_pair=pair_tf_valid,
-            )
-
-
-    elif dataset_kind == "mrccm":
-        # MRCCM: 2D-срезы по z
-        train_ds = MRCCMPairedByZ(
-            Path(args.data_root) / "LR_train",
-            Path(args.data_root) / "HR_train",
-            transform_pair=pair_tf_train,
-            stride=args.z_stride,
-            z_start=args.z_start,
-            z_end=args.z_end,
-        )
-        valid_ds = MRCCMPairedByZ(
-            Path(args.data_root) / "LR_test",
-            Path(args.data_root) / "HR_test",
-            transform_pair=pair_tf_valid,
-            stride=max(1, args.z_stride // 2),
-            z_start=args.z_start,
-            z_end=args.z_end,
-        )
-    else:
-        raise ValueError(f"Unknown dataset_kind: {dataset_kind}")
-
-    # --- DataLoader для всех случаев одинаковый ---
+    # --- DataLoader ---
     train_loader = make_loader(
         train_ds, args.batch_size, args.workers,
         pin=not args.no_pin,
@@ -371,21 +272,13 @@ def main():
         persistent=not args.no_persistent,
     )
 
-    print(f"\n[profile {args.sign} loader]")
+    print(f"\n[profile {args.scale} loader]")
     warmup_profile(train_loader, n_batches=3)
 
-    # --- Модель (общая для всех sign) ---
-    cfg = UNetConfig(
-        in_channels=1, out_channels=1,
-        base_channels=args.base_channels,  # можно вынести в args позже
-        depth=4,
-        norm_enc=False, norm_dec=False,
-        up_mode="pixelshuffle",
-    )
-    #model = UNet2D(cfg).to(device)
+    # --- Model ---
     model = MS_ResUNet().to(device)
     
-    # === Загрузка чекпоинта для дообучения ===
+    # --- Загрузка чекпоинта для дообучения ---
     ckpt = None
     if args.resume is not None:
         ckpt = torch.load(args.resume, map_location=device)
@@ -394,7 +287,7 @@ def main():
         model.load_state_dict(state, strict=True)
         print(f"[ckpt] loaded model weights from {args.resume}")
         
-    # === заморозка слоёв при fine-tune (если нужно) ===
+    # --- заморозка слоёв при fine-tune (если нужно) ---
     if args.finetune and args.freeze_regex is not None:
         pattern = re.compile(args.freeze_regex)
         for name, p in model.named_parameters():
@@ -407,9 +300,8 @@ def main():
     # lr: отдельный для fine-tune, если задан
     lr = args.ft_lr if (args.finetune and args.ft_lr is not None) else args.lr
     opt = optim.AdamW(trainable_params, lr=lr, weight_decay=args.weight_decay)
-    #opt = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-     # --- scheduler ---
+     # --- Scheduler ---
     sched = None
     is_batch_sched = False
 
@@ -427,11 +319,8 @@ def main():
         is_batch_sched = True
 
     elif args.scheduler == "Exponential":
-        #target_factor = 0.0625
-        #gamma = target_factor ** (1.0 / args.epochs)
-        #sched = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=gamma)
-        drop_every = 50          # каждые 50 эпох
-        decay_factor = 0.5       # хотим уменьшать в 2 раза
+        drop_every = 50          # каждые N эпох
+        decay_factor = 0.5       # хотим уменьшать в N раз (сейчас в 2 раза)
         
         gamma = decay_factor ** (1.0 / drop_every)
         sched = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=gamma)
@@ -443,21 +332,23 @@ def main():
     else:
         raise ValueError(f"Unknown scheduler: {args.scheduler}")
         
-    if ckpt is not None and (not args.finetune):
-        if "opt" in ckpt:
+    if (ckpt is not None) and (not args.finetune):
+        if ckpt.get("opt") is not None:
             opt.load_state_dict(ckpt["opt"])
             print("[ckpt] restored optimizer state")
-        if "sched" in ckpt and sched is not None:
+    
+        if (sched is not None) and (ckpt.get("sched") is not None):
             sched.load_state_dict(ckpt["sched"])
             print("[ckpt] restored scheduler state")
 
+
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
 
-    # --- единый цикл обучения для всех sign ---
+    # --- Train cycle ---
     best = math.inf
     t_start = time.time()
 
-        # списки для логирования лоссов по эпохам
+    # списки для логирования лоссов по эпохам
     history_train_loss = []
     history_val_loss = []
 
@@ -482,7 +373,7 @@ def main():
         t_ep = time.time() - t_ep_start
     
         print(
-            f"[{args.sign}] epoch {epoch}: "
+            f"[{args.scale}] epoch {epoch}: "
             f"train_loss {tr_loss:.7f}, val_loss {val_loss:.7f} | "
             f"val_PSNR {val_psnr:.2f} dB, val_SSIM {val_ssim:.4f} | "
             f"(data {d_t:.3f}/batch {b_t:.3f}) | "
@@ -497,7 +388,7 @@ def main():
             elapsed = time.time() - t_start
             avg_ep = elapsed / epoch
             eta = avg_ep * (args.epochs - epoch)
-            print(f"[{args.sign}][time] elapsed={fmt(elapsed)} | avg/epoch={fmt(avg_ep)} | ETA≈{fmt(eta)}")
+            print(f"[{args.scale}][time] elapsed={fmt(elapsed)} | avg/epoch={fmt(avg_ep)} | ETA≈{fmt(eta)}")
 
         if val_loss < best:
             best = val_loss
@@ -507,18 +398,18 @@ def main():
                 "sched": sched.state_dict() if sched is not None else None,
                 "epoch": epoch,
                 "args": vars(args),
-            }, f"best_{args.sign}.pt")
+            }, f"best_{args.scale}.pt")
 
-        # --- сохранение графика лоссов ---
+    # --- Loss graph ---
     epochs = list(range(1, len(history_train_loss) + 1))
-    fig_path = f"loss_curve_{args.sign}.png"
+    fig_path = f"loss_curve_{args.scale}.png"
 
     plt.figure(figsize=(8, 5))
     plt.plot(epochs, history_train_loss, label="train loss")
     plt.plot(epochs, history_val_loss, label="val loss")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
-    plt.title(f"Train vs Val loss ({args.sign})")
+    plt.title(f"Train vs Val loss ({args.scale})")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
@@ -527,7 +418,7 @@ def main():
 
     print(f"[plot] saved loss curves to {fig_path}")
 
-    print(f"[{args.sign}][time] total={fmt(time.time() - t_start)}")
+    print(f"[{args.scale}][time] total={fmt(time.time() - t_start)}")
     print(f"[ALL][time] total train time={fmt(time.time() - t_all_start)}")
 
 
