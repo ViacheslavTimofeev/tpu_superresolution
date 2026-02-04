@@ -11,14 +11,6 @@ from torch.utils.data import Dataset, IterableDataset, get_worker_info
 import random
 import math
 
-RX_Z = re.compile(r"_z(\d{4})\.(?:tif|tiff|png)$", re.IGNORECASE)
-RX_G = re.compile(r"_g(\d{4})\.(?:tif|tiff|png)$", re.IGNORECASE)
-EXTS = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
-
-def _open_pil(p: Path) -> Image.Image:
-    with Image.open(p) as im:
-        return im.copy()
-
 def _get_dirs_deeprock(root: str, split: str, scale: str) -> Tuple[Path, Path]:
     root = Path(root)
 

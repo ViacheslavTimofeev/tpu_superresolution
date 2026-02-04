@@ -52,3 +52,7 @@ preds/
 beton_05/
 beton_005/
 beton_dataset/
+
+# === Onnx ===
+*.onnx
+*.onnx.data
