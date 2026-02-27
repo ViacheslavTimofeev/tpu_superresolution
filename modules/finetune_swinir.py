@@ -158,7 +158,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, loss_fn, sched=Non
 
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.amp.autocast("cuda", enabled=False):#(device.type == "cuda")):
+        with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=(device.type == "cuda")):
             out = model(lr)
             loss = loss_fn(out, hr)
         assert_finite(out, "out")
@@ -191,7 +191,7 @@ def validate(model, loader, device, loss_fn):
         lr = lr.to(device, non_blocking=True)
         hr = hr.to(device, non_blocking=True)
 
-        with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
+        with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=(device.type == "cuda")):
             out = model(lr)
             loss = loss_fn(out, hr)
 
@@ -308,7 +308,7 @@ def main():
         # epoch-wise cosine, stable for fine-tuning
         sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs, eta_min=args.min_lr)
 
-    scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
+    scaler = torch.amp.GradScaler("cuda", enabled=False)#(device.type == "cuda"))
 
     # ---- train loop ----
     best_loss = float("inf")
